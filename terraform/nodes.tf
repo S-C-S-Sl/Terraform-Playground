@@ -103,6 +103,7 @@ resource "hyperv_machine_instance" "node" {
     name        = "lab"
     switch_name = hyperv_network_switch.lab.name
     wait_for_ips = false
+    resource_pool_name = "Primordial"
   }
 
   hard_disk_drives {
