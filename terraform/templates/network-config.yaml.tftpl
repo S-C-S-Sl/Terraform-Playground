@@ -1,0 +1,13 @@
+version: 2
+ethernets:
+  lab0:
+    match:
+      driver: hv_netvsc
+    set-name: eth0
+    addresses:
+      - ${ip}/${prefix_length}
+    routes:
+      - to: default
+        via: ${gateway}
+    nameservers:
+      addresses: ${jsonencode(dns_servers)}

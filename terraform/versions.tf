@@ -5,5 +5,9 @@ terraform {
       source  = "taliesins/hyperv"
       version = "~> 1.2"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }

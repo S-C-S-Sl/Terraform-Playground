@@ -1,0 +1,32 @@
+#cloud-config
+hostname: ${hostname}
+manage_etc_hosts: true
+
+users:
+  - name: ubuntu
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+%{ if console_password_hash != null ~}
+    lock_passwd: false
+    passwd: ${jsonencode(console_password_hash)}
+%{ else ~}
+    lock_passwd: true
+%{ endif ~}
+
+# Kein Passwort-Login per SSH, kein Root-Login
+ssh_pwauth: false
+disable_root: true
+
+# SSH-Zugang nur per Zertifikat der Lab-CA (Principal muss dem Benutzernamen entsprechen)
+write_files:
+  - path: /etc/ssh/trusted_user_ca_keys
+    permissions: "0644"
+    content: ${jsonencode("${ssh_ca_public_key}\n")}
+  - path: /etc/ssh/sshd_config.d/10-k8s-lab-ca.conf
+    permissions: "0644"
+    content: |
+      TrustedUserCAKeys /etc/ssh/trusted_user_ca_keys
+
+runcmd:
+  - systemctl try-restart ssh

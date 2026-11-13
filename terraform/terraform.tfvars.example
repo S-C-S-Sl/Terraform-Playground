@@ -1,0 +1,13 @@
+# Kopieren nach terraform.tfvars (wird nicht eingecheckt) und anpassen.
+
+# base_image_path = "D:\\Hyper-V\\images\\ubuntu-2404-base.vhdx"
+# vm_root         = "D:\\Hyper-V\\VMs"
+
+# DNS-Server des Hosts: Get-DnsClientServerAddress -AddressFamily IPv4
+dns_servers = ["192.0.2.10", "192.0.2.11"]
+
+# Inhalt von ~/.ssh-ca/k8s_lab_user_ca.pub (WSL: cat ~/.ssh-ca/k8s_lab_user_ca.pub)
+ssh_user_ca_public_key = "ssh-ed25519 AAAA... k8s-lab user CA"
+
+# Optional, nur für den ersten Test: Konsolen-Passwort (WSL: mkpasswd -m sha-512)
+# console_password_hash = "$6$..."
