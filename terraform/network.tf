@@ -11,22 +11,21 @@ locals {
     prefix_length = 24
     nat_prefix    = "192.168.250.0/24"
     nat_name      = "k8s-lab-nat"
-    scripts_dir   = abspath("${path.module}/../scripts")
   }
 }
 
 resource "terraform_data" "lab_nat" {
-  input            = local.lab_net
+  input            = merge(local.lab_net, { scripts_dir = "${path.module}/../host" })
   triggers_replace = local.lab_net
 
   provisioner "local-exec" {
-    interpreter = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+    interpreter = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
     command     = "& '${self.input.scripts_dir}/setup-nat.ps1' -SwitchName '${self.input.switch_name}' -GatewayIp '${self.input.gateway_ip}' -PrefixLength ${self.input.prefix_length} -NatPrefix '${self.input.nat_prefix}' -NatName '${self.input.nat_name}'"
   }
 
   provisioner "local-exec" {
     when        = destroy
-    interpreter = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+    interpreter = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
     command     = "& '${self.input.scripts_dir}/teardown-nat.ps1' -SwitchName '${self.input.switch_name}' -GatewayIp '${self.input.gateway_ip}' -NatName '${self.input.nat_name}'"
   }
 }
