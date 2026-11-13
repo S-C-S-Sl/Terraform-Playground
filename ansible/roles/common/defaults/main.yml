@@ -1,0 +1,22 @@
+# Grundpakete; conntrack und socat braucht der kubelet bzw. kubeadm
+common_packages:
+  - ca-certificates
+  - curl
+  - gpg
+  - conntrack
+  - socat
+  - ethtool
+
+# Nach Updates neu starten, wenn das System es verlangt
+common_reboot_if_required: true
+
+# Kernel-Module für Container-Runtime und Pod-Netzwerk
+common_kernel_modules:
+  - overlay
+  - br_netfilter
+
+# Netzwerk-Einstellungen, die kubeadm in den Preflight-Checks prüft
+common_sysctl:
+  net.ipv4.ip_forward: 1
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1

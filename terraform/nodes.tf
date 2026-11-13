@@ -1,12 +1,13 @@
 locals {
   nodes = {
-    cp-1 = { ip = "192.168.250.11", cpus = 2, memory_gb = 4 }
+    cp-1 = {  role = "control_plane", ip = "192.168.250.11", cpus = 2, memory_gb = 4 },
+    #worker-1 = { role = "worker", ip = "192.168.250.12", cpus = 2, memory_gb = 2 },
+    #worker-2 = { role = "worker", ip = "192.168.250.13", cpus = 2, memory_gb = 2 },
   }
 
   lab_prefix_length = local.lab_net.prefix_length
   lab_gateway       = local.lab_net.gateway_ip
 }
-
 # --- cloud-init Seed (NoCloud) ------------------------------------------------
 # Die drei Dateien werden lokal gezippt, der Provider baut daraus auf dem Host
 # eine ISO. cloud-init erkennt sie am Volume-Namen CIDATA.
@@ -47,6 +48,7 @@ resource "hyperv_vhd" "os" {
   for_each    = local.nodes
   path        = "${var.vm_root}\\${each.key}\\os.vhdx"
   parent_path = var.base_image_path
+  vhd_type    = "Differencing" # Pflicht, sonst legt der Provider eine leere Disk an (Doku ist hier falsch)
 }
 
 resource "hyperv_iso_image" "cidata" {
@@ -55,7 +57,6 @@ resource "hyperv_iso_image" "cidata" {
   source_zip_file_path      = data.archive_file.cidata[each.key].output_path
   source_zip_file_path_hash = data.archive_file.cidata[each.key].output_sha
   destination_iso_file_path = "${var.vm_root}\\${each.key}\\cidata.iso"
-  iso_media_type            = "cdrom"
   iso_file_system_type      = "iso9660|joliet"
 
   depends_on = [hyperv_vhd.os] # legt den VM-Ordner an
@@ -71,8 +72,7 @@ resource "hyperv_machine_instance" "node" {
   notes      = "k8s-lab - verwaltet durch Terraform"
 
   processor_count      = each.value.cpus
-  static_memory        = true
-  dynamic_memory       = false
+  static_memory        = true # schließt dynamic_memory aus
   memory_startup_bytes = each.value.memory_gb * 1024 * 1024 * 1024
 
   checkpoint_type        = "Disabled" # Checkpoints vertragen sich schlecht mit Differencing-Disks
@@ -102,6 +102,7 @@ resource "hyperv_machine_instance" "node" {
   network_adaptors {
     name        = "lab"
     switch_name = hyperv_network_switch.lab.name
+    wait_for_ips = false
   }
 
   hard_disk_drives {
@@ -112,9 +113,16 @@ resource "hyperv_machine_instance" "node" {
   }
 
   dvd_drives {
+    resource_pool_name  = "Primordial"
     controller_number   = 0
     controller_location = 1
     path                = hyperv_iso_image.cidata[each.key].destination_iso_file_path
+  }
+
+
+  lifecycle {
+    # CPU-Feineinstellungen verwaltet Hyper-V (u. a. hostabhängige NUMA-Werte)
+    ignore_changes = [vm_processor]
   }
 
   # NAT muss stehen, bevor die VM Pakete laden will

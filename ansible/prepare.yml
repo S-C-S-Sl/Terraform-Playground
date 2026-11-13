@@ -1,0 +1,9 @@
+# Basis-Konfiguration aller Lab-VMs: Pakete, Updates und die
+# Betriebssystem-Voraussetzungen für Kubernetes (kubeadm).
+#
+# Aufruf (WSL, im Repo-Root):  ansible-playbook ansible/prepare.yml
+- name: Basis-Konfiguration
+  hosts: all
+  become: true
+  roles:
+    - common

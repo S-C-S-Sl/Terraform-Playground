@@ -1,0 +1,16 @@
+# Standard: Textdateien immer mit LF, auch beim Auschecken unter Windows.
+# Wichtig für Bash-Skripte (WSL) und alles, was auf die Linux-VMs geht
+# (cloud-init-Templates, später Ansible).
+* text=auto eol=lf
+
+# Windows-Batchdateien brauchen CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binärdateien nie umwandeln
+*.vhdx binary
+*.vhd  binary
+*.iso  binary
+*.zip  binary
+*.png  binary
+*.jpg  binary

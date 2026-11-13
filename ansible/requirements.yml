@@ -1,0 +1,5 @@
+# Benötigte Collections. Im Paket "ansible" (pipx install ansible) bereits enthalten,
+# nur bei reinem ansible-core nötig:  ansible-galaxy collection install -r ansible/requirements.yml
+collections:
+  - name: ansible.posix
+  - name: community.general

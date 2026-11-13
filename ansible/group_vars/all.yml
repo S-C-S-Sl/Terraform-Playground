@@ -1,0 +1,14 @@
+# Verbindungseinstellungen für alle Lab-VMs.
+# Wird automatisch geladen, weil der Ordner neben dem Inventory liegt.
+
+ansible_user: ubuntu
+# Zertifikat (<key>-cert.pub) wird von OpenSSH automatisch mitverwendet
+ansible_ssh_private_key_file: ~/.ssh/id_ed25519_k8s_lab
+ansible_python_interpreter: auto_silent
+ansible_pipelining: true
+
+# accept-new: unbekannte Hosts automatisch aufnehmen, geänderte Host-Schlüssel ablehnen
+ansible_ssh_common_args: >-
+  -o ControlMaster=auto
+  -o ControlPersist=60s
+  -o StrictHostKeyChecking=accept-new
