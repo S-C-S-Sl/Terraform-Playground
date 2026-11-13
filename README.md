@@ -20,6 +20,10 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 ├── ssh/                          # Zugang zu den VMs (WSL, Bash)
 │   └── sign-cert.sh              # pro Sitzung: kurzlebiges SSH-Zertifikat ausstellen
 ├── ansible/                      # Konfiguration der VMs (WSL)
+│   ├── prepare.yml               # Playbook: Basis-Konfiguration aller VMs
+│   ├── requirements.yml          # benötigte Collections
+│   ├── roles/
+│   │   └── common/               # Updates, Grundpakete, Swap, Kernel-Module, sysctl
 │   └── inventory/
 │       ├── hosts.yml             # von Terraform erzeugt, nicht eingecheckt
 │       └── group_vars/all.yml    # Verbindung: Benutzer, Schlüssel, SSH-Optionen
@@ -28,8 +32,7 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
     ├── providers.tf
     ├── variables.tf
     ├── network.tf                # internal Switch + NAT
-    ├── nodes.tf                  # VMs: Differencing-Disk, cloud-init-ISO, VM
-    ├── nodes.auto.tfvars         # welche VMs (Rolle, IP, CPU, RAM), eingecheckt
+    ├── nodes.tf                  # VMs (local.nodes: Rolle, IP, CPU, RAM) + Disk, cloud-init-ISO, VM
     ├── inventory.tf              # erzeugt ansible/inventory/hosts.yml aus nodes
     ├── outputs.tf
     ├── templates/                # cloud-init: user-data, network-config, meta-data
@@ -194,17 +197,18 @@ Hashes gehören deshalb nur in diese Datei.
 | `vm_root` | nein | Standard `D:\Hyper-V\VMs`, pro VM ein Unterordner |
 | `console_password_hash` | nein | Notfall-Login an der Hyper-V-Konsole, siehe unten |
 
-Die VMs selbst stehen in `terraform/nodes.auto.tfvars` (wird automatisch geladen und ist eingecheckt):
+Die VMs selbst stehen in `terraform/nodes.tf` im Block `locals`:
 
 ```hcl
 nodes = {
-  cp-1     = { role = "control_plane", ip = "192.168.250.11", memory_gb = 4 }
-  worker-1 = { role = "worker",        ip = "192.168.250.21" }   # cpus/memory_gb optional, Standard 2/2
+  cp-1     = { role = "control_plane", ip = "192.168.250.11", cpus = 2, memory_gb = 4 }
+  worker-1 = { role = "worker",        ip = "192.168.250.21", cpus = 2, memory_gb = 2 }
 }
 ```
 
-Konvention: `cp-<n>` (Control Plane) ab `.11`, `worker-<n>` ab `.21`. Ungültige Namen, Rollen,
-doppelte oder netzfremde IPs fallen beim `terraform plan` auf.
+Konvention: `cp-<n>` (Control Plane) ab `.11`, `worker-<n>` ab `.21`. `role` (`control_plane` oder `worker`)
+bestimmt die Gruppe im Ansible-Inventory. IPs außerhalb des Lab-Netzes oder die Gateway-Adresse fallen beim
+`terraform plan` auf.
 
 #### Konsolen-Passwort (optional, für den ersten Test empfohlen)
 
@@ -273,14 +277,36 @@ getent hosts archive.ubuntu.com   # DNS
 
 ### 9. Ansible einrichten (einmalig, WSL)
 
+Prüfen, ob Ansible schon installiert ist:
+
+```bash
+ansible --version        # "command not found" -> installieren
+```
+
 Installation per `pipx`, damit Ansible aktuell ist und nicht mit den Python-Paketen des Systems kollidiert:
 
 ```bash
 sudo apt update && sudo apt install -y pipx
 pipx install --include-deps ansible
-pipx ensurepath          # danach neues Terminal öffnen
+pipx ensurepath
+exec bash                # oder neues Terminal, damit ~/.local/bin im PATH ist
 ansible --version
 ```
+
+Das Paket `ansible` enthält neben `ansible-core` auch die Collections, die die Playbooks brauchen
+(`ansible.posix`, `community.general`). Aktualisieren: `pipx upgrade --include-injected ansible`.
+
+**Installiert, aber `command not found`?** `pipx` legt die Befehle unter `~/.local/bin` ab. Steht das nicht
+im `PATH`, findet die Shell sie nicht, und `pipx install` meldet trotzdem *already seems to be installed*:
+
+```bash
+pipx ensurepath          # trägt ~/.local/bin in ~/.bashrc ein
+exec bash                # Shell neu starten, damit es greift
+ansible --version
+```
+
+Den Vorschlag `sudo apt install ansible-core` aus der Fehlermeldung **nicht** befolgen: Das legt eine zweite,
+ältere Installation ohne die benötigten Collections daneben.
 
 `ANSIBLE_INVENTORY` dauerhaft setzen (Pfad zum Repo anpassen):
 
@@ -293,14 +319,14 @@ Die gesamte Konfiguration ist YAML, eine `ansible.cfg` (INI-Format) gibt es bewu
 
 | Datei | Inhalt |
 |---|---|
-| `inventory/hosts.yml` | Hosts und Gruppen, erzeugt von Terraform (`terraform/inventory.tf`) aus `nodes.auto.tfvars` |
+| `inventory/hosts.yml` | Hosts und Gruppen, erzeugt von Terraform (`terraform/inventory.tf`) aus `local.nodes` in `nodes.tf` |
 | `inventory/group_vars/all.yml` | Verbindung für alle VMs: Benutzer `ubuntu`, Schlüssel `~/.ssh/id_ed25519_k8s_lab`, SSH-Optionen |
 
 - `group_vars/` neben dem Inventory lädt Ansible automatisch.
 - Das Zertifikat neben dem Schlüssel verwendet OpenSSH automatisch mit.
 - Unbekannte Host-Schlüssel werden beim ersten Kontakt übernommen (`StrictHostKeyChecking=accept-new`), geänderte aber abgelehnt.
 - Die Gruppen im Inventory ergeben sich aus `role`: `control_plane` und `workers`. Nach jeder Änderung an
-  `nodes.auto.tfvars` einmal `terraform apply`, dann ist das Inventory aktuell.
+  `local.nodes` einmal `terraform apply`, dann ist das Inventory aktuell.
 
 Warum keine `ansible.cfg`: Verzeichnisse unter `/mnt/c` gelten für WSL als *world-writable*, und Ansible
 ignoriert eine `ansible.cfg` im aktuellen Ordner dann aus Sicherheitsgründen. Ohne Datei entfällt das Problem.
@@ -316,6 +342,30 @@ ansible-inventory --host cp-1                               # zeigt die Variable
 ansible all -m ping                                         # cp-1 | SUCCESS => "ping": "pong"
 ansible all -m setup -a 'filter=ansible_distribution*'
 ```
+
+### 11. Basis-Konfiguration (WSL)
+
+Das Playbook `prepare.yml` wendet die Rolle `common` auf alle VMs an:
+
+| Schritt | Warum |
+|---|---|
+| `apt update` + `dist-upgrade`, Neustart falls nötig | aktueller Stand vor der Kubernetes-Installation |
+| Grundpakete (`curl`, `gpg`, `conntrack`, `socat`, …) | Paketquellen einbinden; `conntrack`/`socat` braucht der kubelet |
+| Swap aus (sofort und in `/etc/fstab`) | der kubelet startet standardmäßig nicht mit aktivem Swap |
+| Kernel-Module `overlay`, `br_netfilter` (sofort und beim Boot) | Container-Dateisystem und Pod-Netzwerk |
+| sysctl `ip_forward`, `bridge-nf-call-ip(6)tables` | wird von den kubeadm-Preflight-Checks geprüft |
+
+Die Werte stehen in `roles/common/defaults/main.yml` und lassen sich dort oder per `group_vars` überschreiben.
+
+```bash
+cd /mnt/c/<pfad-zum-repo>
+ansible-playbook ansible/prepare.yml --check --diff     # Trockenlauf: zeigt, was sich ändern würde
+ansible-playbook ansible/prepare.yml
+```
+
+Ein zweiter Lauf sollte überall `ok` und kein `changed` zeigen (Idempotenz). Die Collections `ansible.posix`
+und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
+`ansible-galaxy collection install -r ansible/requirements.yml`.
 
 ## Abbau
 
@@ -353,6 +403,8 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 | `ssh` aus WSL hängt ohne Meldung | WSL läuft im NAT-Modus (`ip route` zeigt nur ein `172.x`-Netz). Mirrored-Modus aktivieren, siehe Voraussetzungen. |
 | `Identity file ... not accessible` und `Permission denied (publickey)` | SSH wurde unter Windows gestartet. Schlüssel und Zertifikat liegen in der Ubuntu-WSL. |
 | `ssh-keygen: command not found` oder Prompt `root@...` | Falsche WSL-Distribution (Standard ist evtl. eine andere). `wsl -l -v` prüfen, `wsl -d Ubuntu-24.04` öffnen. |
+| `ansible all -m ping` scheitert mit `Permission denied`, das Playbook funktioniert | `group_vars/` liegt neben dem Playbook statt neben dem Inventory. Ad-hoc-Befehle finden es dort nicht und verbinden sich als WSL-Benutzer statt als `ubuntu`. Richtig: `ansible/inventory/group_vars/all.yml` |
+| `ansible: command not found`, aber `pipx` meldet *already seems to be installed* | `~/.local/bin` fehlt im `PATH`: `pipx ensurepath`, dann `exec bash` (Schritt 9). Nicht `apt install ansible-core`. |
 | `No inventory was parsed, only implicit localhost is available` | `ANSIBLE_INVENTORY` ist nicht gesetzt (Schritt 9) oder `terraform apply` hat das Inventory noch nicht erzeugt. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | VM wurde neu gebaut und hat einen neuen Host-Schlüssel. Alten Eintrag entfernen: `ssh-keygen -R 192.168.250.11` |
 | VM nicht per SSH erreichbar | An der Hyper-V-Konsole anmelden (erfordert `console_password_hash`) und `cloud-init status --long` prüfen. |
@@ -361,12 +413,13 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 ## Ausblick
 
 - [x] cloud-init Seed-ISO und erste VM (Gen2, Differencing-Disk), öffentlicher CA-Schlüssel per cloud-init
-- [x] VMs per `for_each` aus `nodes.auto.tfvars`
+- [x] VMs per `for_each` aus `local.nodes`
 - [ ] `wait_for_ips = false` an der Netzwerkkarte (ohne KVP-Daemon wartet der Provider sonst 5 min pro VM)
 - [ ] Konsolen-Passwort wieder entfernen, sobald der Zertifikats-Zugang sich bewährt hat
 - [ ] Ablageort des Basis-Images außerhalb des Repos
 - [ ] Host-Zertifikate (VMs weisen sich per CA aus, kein Fingerprint-Wechsel nach Neuaufbau)
-- [ ] Ansible: Grundgerüst, Inventory aus Terraform
-- [ ] Ansible: containerd, kubeadm, Cluster-Aufbau
+- [x] Ansible: Grundgerüst, Inventory aus Terraform
+- [x] Ansible: Basis-Konfiguration (`prepare.yml`, Rolle `common`)
+- [ ] Ansible: containerd, Kubernetes-Pakete, `kubeadm init`
 - [ ] Helm: Cilium als CNI, danach Argo CD
 - [ ] RHEL-Image (Developer Subscription) als zweite Distribution

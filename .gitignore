@@ -13,3 +13,6 @@ images/
 
 
 .idea/**
+
+terraform/.build/
+ansible/inventory/hosts.yml
