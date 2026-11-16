@@ -4,7 +4,8 @@ Lokales Lab, um einen Kubernetes-Cluster auf Hyper-V aufzubauen.
 Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.terraform.io/providers/taliesins/hyperv/latest)),
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
-> Status: Netzwerk und erste VM (`cp-1`) laufen, Zugang per SSH-Zertifikat funktioniert. Als Nächstes: Ansible und Kubernetes.
+> Status: Netzwerk und erste VM (`cp-1`) laufen, Zugang per SSH-Zertifikat, Ansible-Basis-Konfiguration angewendet.
+> Als Nächstes: containerd, Kubernetes-Pakete und `kubeadm init`.
 
 ## Struktur
 
@@ -308,7 +309,8 @@ ansible --version
 Den Vorschlag `sudo apt install ansible-core` aus der Fehlermeldung **nicht** befolgen: Das legt eine zweite,
 ältere Installation ohne die benötigten Collections daneben.
 
-`ANSIBLE_INVENTORY` dauerhaft setzen (Pfad zum Repo anpassen):
+**Inventory angeben:** In dieser README wird das Inventory explizit mit `-i` übergeben. Wer das nicht
+bei jedem Befehl schreiben will, setzt es als Standard (dann kann `-i` entfallen, ein angegebenes `-i` hat Vorrang):
 
 ```bash
 echo 'export ANSIBLE_INVENTORY=/mnt/c/<pfad-zum-repo>/ansible/inventory/hosts.yml' >> ~/.bashrc
@@ -334,14 +336,16 @@ Was sich nur in einer `ansible.cfg` einstellen lässt, wird bei Bedarf über Umg
 
 ### 10. Verbindung testen (WSL)
 
-Zertifikat gültig (Schritt 4), dann:
+Im Repo-Root, Zertifikat gültig (Schritt 4):
 
 ```bash
-ansible-inventory --graph
-ansible-inventory --host cp-1                               # zeigt die Variablen aus group_vars
-ansible all -m ping                                         # cp-1 | SUCCESS => "ping": "pong"
-ansible all -m setup -a 'filter=ansible_distribution*'
+INV=ansible/inventory/hosts.yml
+ansible-inventory -i $INV --graph
+ansible-inventory -i $INV --host cp-1                        # zeigt auch die Variablen aus group_vars
+ansible -i $INV all -m ping                                  # cp-1 | SUCCESS => "ping": "pong"
 ```
+
+Scheitert der Ping mit `Permission denied`, ist meist das Zertifikat abgelaufen (8 Stunden): `bash ssh/sign-cert.sh -a`.
 
 ### 11. Basis-Konfiguration (WSL)
 
@@ -359,13 +363,44 @@ Die Werte stehen in `roles/common/defaults/main.yml` und lassen sich dort oder p
 
 ```bash
 cd /mnt/c/<pfad-zum-repo>
-ansible-playbook ansible/prepare.yml --check --diff     # Trockenlauf: zeigt, was sich ändern würde
-ansible-playbook ansible/prepare.yml
+ansible-playbook -i ansible/inventory/hosts.yml ansible/prepare.yml --check --diff   # Trockenlauf
+ansible-playbook -i ansible/inventory/hosts.yml ansible/prepare.yml
+ansible-playbook -i ansible/inventory/hosts.yml ansible/prepare.yml                  # erwartet: changed=0
 ```
 
-Ein zweiter Lauf sollte überall `ok` und kein `changed` zeigen (Idempotenz). Die Collections `ansible.posix`
+- **Trockenlauf** (`--check --diff`): zeigt, was sich ändern würde, ändert aber nichts. Erkennbar an den
+  `--- before / +++ after`-Abschnitten. Danach muss der echte Lauf noch folgen.
+- **Zweiter echter Lauf**: muss im `PLAY RECAP` `changed=0` zeigen (Idempotenz). Ein `changed` deutet auf
+  einen Task hin, der nicht sauber idempotent geschrieben ist.
+- Fakten werden über `ansible_facts['…']` gelesen, nicht über `ansible_…`-Variablen (ab ansible-core 2.24 entfernt). Die Collections `ansible.posix`
 und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
 `ansible-galaxy collection install -r ansible/requirements.yml`.
+
+## Eigenheiten des Hyper-V-Providers
+
+Der Provider `taliesins/hyperv` hat einige Fehler und Doku-Abweichungen. Die Konfiguration in `nodes.tf`
+umgeht sie; die Kommentare dort verweisen hierher. Ermittelt aus dem Quelltext des Providers.
+
+| Thema | Verhalten | Umgehung in `nodes.tf` |
+|---|---|---|
+| Differencing-Disk | `vhd_type` hat den Standard `Dynamic`; ohne `vhd_type = "Differencing"` legt der Provider eine leere Disk an und fordert eine Größe. Die Doku behauptet fälschlich, `vhd_type` und `parent_path` schlössen sich aus. | `vhd_type = "Differencing"` |
+| Arbeitsspeicher | `static_memory` und `dynamic_memory` dürfen nicht beide gesetzt sein. | nur `static_memory = true` |
+| ISO-Medientyp | `iso_media_type = "cdrom"` lehnt die Windows-Schnittstelle (IMAPI2) ab. | Standard des Providers verwenden |
+| ZIP nach Fehlschlag | Scheitert die ISO-Erzeugung, bleibt `$env:TEMP\<vm>-cidata.zip` liegen, und der nächste Lauf meldet *already exists*. | Datei löschen, `apply` wiederholen |
+| Warten auf IPs | `wait_for_ips` ist standardmäßig `true` (Timeout 300 s). Ohne KVP-Daemon in der VM wartet jeder Neuaufbau 5 Minuten. | `wait_for_ips = false` |
+| Ressourcenpool | Hyper-V meldet `Primordial`; ohne Angabe entsteht ein Dauer-Diff. | `resource_pool_name = "Primordial"` an DVD und Netzwerkkarte |
+| **Netzwerkkarte wird getrennt** | Das In-place-Update einer Netzwerkkarte vergleicht eine nicht existierende Eigenschaft (`ResourcePoolName` statt `PoolName`) und ruft dabei `Disconnect-VMNetworkAdapter` auf. Die VM ist danach nicht mehr erreichbar (*No route to host*). | `ignore_changes = [network_adaptors]`; Änderungen an der Karte nur per Neuaufbau |
+| Boot-Reihenfolge | Hyper-V stellt die DVD wieder an erste Stelle, der Provider kann die Reihenfolge nicht halten. Unkritisch, die cloud-init-ISO ist nicht bootfähig. | `ignore_changes = [vm_firmware[0].boot_order]` |
+| CPU-Einstellungen | Der Provider liest `vm_processor` mit hostabhängigen Werten aus und will sie ohne Konfiguration auf `null` setzen. | `ignore_changes = [vm_processor]` |
+
+Eine VM gezielt neu bauen (z. B. für Änderungen an der Netzwerkkarte):
+
+```powershell
+terraform apply -replace='hyperv_machine_instance.node["cp-1"]'
+```
+
+Nach jedem `apply` sollte ein weiteres `terraform plan` **No changes** zeigen. Ist das nicht so, liegt ein
+Dauer-Diff vor: vor dem nächsten `apply` prüfen, was der Provider ändern will.
 
 ## Abbau
 
@@ -405,7 +440,11 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 | `ssh-keygen: command not found` oder Prompt `root@...` | Falsche WSL-Distribution (Standard ist evtl. eine andere). `wsl -l -v` prüfen, `wsl -d Ubuntu-24.04` öffnen. |
 | `ansible all -m ping` scheitert mit `Permission denied`, das Playbook funktioniert | `group_vars/` liegt neben dem Playbook statt neben dem Inventory. Ad-hoc-Befehle finden es dort nicht und verbinden sich als WSL-Benutzer statt als `ubuntu`. Richtig: `ansible/inventory/group_vars/all.yml` |
 | `ansible: command not found`, aber `pipx` meldet *already seems to be installed* | `~/.local/bin` fehlt im `PATH`: `pipx ensurepath`, dann `exec bash` (Schritt 9). Nicht `apt install ansible-core`. |
-| `No inventory was parsed, only implicit localhost is available` | `ANSIBLE_INVENTORY` ist nicht gesetzt (Schritt 9) oder `terraform apply` hat das Inventory noch nicht erzeugt. |
+| `No inventory was parsed, only implicit localhost is available` | Kein Inventory angegeben: `-i ansible/inventory/hosts.yml` oder `ANSIBLE_INVENTORY` setzen (Schritt 9). Fehlt die Datei, mit `terraform apply` neu erzeugen. |
+| `ssh: connect to host … No route to host`, VM läuft | Netzwerkkarte vom Switch getrennt (siehe *Eigenheiten des Hyper-V-Providers*). Prüfen: `Get-VMNetworkAdapter -VMName cp-1`; wieder verbinden: `Connect-VMNetworkAdapter -VMName cp-1 -Name lab -SwitchName k8s-lab` |
+| `ping` aus WSL: `Destination Host Unreachable` | VM aus (`Get-VM cp-1` in PowerShell, ggf. `Start-VM cp-1`) oder Netzwerkkarte getrennt (Zeile darüber). |
+| `terraform plan` zeigt nach `apply` weiter Änderungen | Dauer-Diff durch den Provider, siehe *Eigenheiten des Hyper-V-Providers*. |
+| `[DEPRECATION WARNING]: INJECT_FACTS_AS_VARS` | Fakt über `ansible_…` gelesen. Stattdessen `ansible_facts['…']` (ohne Präfix). |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | VM wurde neu gebaut und hat einen neuen Host-Schlüssel. Alten Eintrag entfernen: `ssh-keygen -R 192.168.250.11` |
 | VM nicht per SSH erreichbar | An der Hyper-V-Konsole anmelden (erfordert `console_password_hash`) und `cloud-init status --long` prüfen. |
 | SSH: `Permission denied (publickey)` | Zertifikat abgelaufen oder falscher Principal: `ssh-keygen -L -f ~/.ssh/id_ed25519_k8s_lab-cert.pub` prüfen, ggf. neu signieren. |
@@ -414,12 +453,13 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 
 - [x] cloud-init Seed-ISO und erste VM (Gen2, Differencing-Disk), öffentlicher CA-Schlüssel per cloud-init
 - [x] VMs per `for_each` aus `local.nodes`
-- [ ] `wait_for_ips = false` an der Netzwerkkarte (ohne KVP-Daemon wartet der Provider sonst 5 min pro VM)
+- [x] `wait_for_ips = false` an der Netzwerkkarte
+- [ ] Bestätigen, dass `terraform plan` nach `apply` dauerhaft No changes zeigt (Provider-Umgehungen)
 - [ ] Konsolen-Passwort wieder entfernen, sobald der Zertifikats-Zugang sich bewährt hat
 - [ ] Ablageort des Basis-Images außerhalb des Repos
 - [ ] Host-Zertifikate (VMs weisen sich per CA aus, kein Fingerprint-Wechsel nach Neuaufbau)
 - [x] Ansible: Grundgerüst, Inventory aus Terraform
-- [x] Ansible: Basis-Konfiguration (`prepare.yml`, Rolle `common`)
+- [x] Ansible: Basis-Konfiguration (`prepare.yml`, Rolle `common`), idempotent
 - [ ] Ansible: containerd, Kubernetes-Pakete, `kubeadm init`
 - [ ] Helm: Cilium als CNI, danach Argo CD
 - [ ] RHEL-Image (Developer Subscription) als zweite Distribution

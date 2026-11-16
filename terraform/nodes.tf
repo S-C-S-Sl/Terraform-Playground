@@ -123,7 +123,7 @@ resource "hyperv_machine_instance" "node" {
 
   lifecycle {
     # CPU-Feineinstellungen verwaltet Hyper-V (u. a. hostabhängige NUMA-Werte)
-    ignore_changes = [vm_processor]
+    ignore_changes = [vm_processor, network_adaptors, vm_firmware[0].boot_order]
   }
 
   # NAT muss stehen, bevor die VM Pakete laden will
