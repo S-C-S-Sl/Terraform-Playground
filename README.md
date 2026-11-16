@@ -4,8 +4,8 @@ Lokales Lab, um einen Kubernetes-Cluster auf Hyper-V aufzubauen.
 Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.terraform.io/providers/taliesins/hyperv/latest)),
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
-> Status: Netzwerk und erste VM (`cp-1`) laufen, Zugang per SSH-Zertifikat, Ansible-Basis-Konfiguration angewendet.
-> containerd und Kubernetes-Pakete installiert. Als Nächstes: `kubeadm init` (`control-plane.yml`), danach Cilium.
+> Status: Cluster mit drei Knoten (`cp-1`, `worker-1`, `worker-2`; Kubernetes 1.37, Cilium 1.20 mit Hubble) läuft
+> und lässt sich jederzeit neu aufbauen. Als Nächstes: Entscheidung kube-proxy, LoadBalancer-IPs/Gateway API, Argo CD.
 
 ## Struktur
 
@@ -20,16 +20,25 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   └── prepare-image.sh
 ├── ssh/                          # Zugang zu den VMs (WSL, Bash)
 │   └── sign-cert.sh              # pro Sitzung: kurzlebiges SSH-Zertifikat ausstellen
+├── tools/                        # Hilfsskripte für die WSL-Arbeitsumgebung
+│   ├── install-helm.sh           # Helm installieren/aktualisieren
+│   └── install-k9s.sh            # k9s installieren/aktualisieren
+├── platform/                     # Cluster-Inhalte per Helm (WSL)
+│   └── cilium/
+│       ├── values.yaml           # CNI: Abweichungen von den Chart-Standardwerten
+│       └── install.sh            # Chart-Version + Installation/Update
 ├── ansible/                      # Konfiguration der VMs (WSL)
 │   ├── prepare.yml               # Playbook: Basis-Konfiguration aller VMs
 │   ├── kubernetes.yml            # Playbook: containerd + Kubernetes-Pakete
 │   ├── control-plane.yml         # Playbook: kubeadm init, kubeconfig nach WSL
+│   ├── workers.yml               # Playbook: kubeadm join, Taint der Control Plane
 │   ├── requirements.yml          # benötigte Collections
 │   ├── roles/
 │   │   ├── common/               # Updates, Grundpakete, Swap, Kernel-Module, sysctl
 │   │   ├── containerd/           # Container-Runtime (systemd-cgroups)
 │   │   ├── kubernetes/           # kubelet, kubeadm, kubectl aus pkgs.k8s.io, gesperrt
-│   │   └── control_plane/        # kubeadm-Konfiguration (Template), init, kubeconfig
+│   │   ├── control_plane/        # kubeadm-Konfiguration (Template), init, kubeconfig
+│   │   └── worker/               # Join-Befehl erzeugen, kubeadm join, Label
 │   └── inventory/
 │       ├── hosts.yml             # von Terraform erzeugt, nicht eingecheckt
 │       └── group_vars/all.yml    # Verbindung: Benutzer, Schlüssel, SSH-Optionen
@@ -52,6 +61,8 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 | `base-image/` | WSL, Bash | Basis-Images bauen |
 | `ssh/` | WSL, Bash | Zugang zu den VMs |
 | `ansible/` | WSL | Konfiguration der VMs |
+| `platform/` | WSL (Helm) | Inhalte des Clusters, beginnend mit dem CNI |
+| `tools/` | WSL, Bash | Werkzeuge der Arbeitsumgebung installieren |
 | `terraform/` | Windows, Admin-PowerShell | Netz und VMs |
 
 Bash-Skripte werden mit `bash <skript>` aufgerufen, nicht über PowerShell. Die `.gitattributes`
@@ -106,7 +117,8 @@ Alles in der **Ubuntu-WSL** (`wsl -d Ubuntu-24.04`), als normaler Benutzer, nich
 | `whois` | enthält `mkpasswd` für den Konsolen-Passwort-Hash | apt |
 | Ansible | Konfiguration der VMs | `pipx` |
 | `kubectl` | Cluster bedienen | Binärdatei von `dl.k8s.io`, Version passend zum Cluster |
-| Helm | Charts installieren (Cilium usw.) | apt-Repository des Helm-Projekts |
+| Helm | Charts installieren (Cilium usw.) | `tools/install-helm.sh` (apt-Repository des Helm-Projekts) |
+| k9s | Terminal-Oberfläche für den Cluster | `tools/install-k9s.sh` |
 
 #### Basis-Pakete
 
@@ -152,17 +164,40 @@ Aktualisieren: dieselben Befehle mit neuer Version.
 
 #### Helm
 
-Aus dem offiziellen apt-Repository des Helm-Projekts; Updates kommen danach mit `apt upgrade`:
+Aus dem offiziellen apt-Repository des Helm-Projekts. Das Skript bindet das Repository (neu) ein und
+installiert bzw. aktualisiert Helm; danach kommen Updates auch mit `apt upgrade`.
 
 ```bash
-curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey \
-  | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" \
-  | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
-sudo apt update
-sudo apt install -y helm
-helm version
+bash tools/install-helm.sh
+helm version --short
 ```
+
+#### k9s
+
+Terminal-Oberfläche für Kubernetes. Nutzt dieselbe kubeconfig wie kubectl. Das Skript lädt das Debian-Paket
+aus den GitHub-Releases, prüft die SHA-256-Prüfsumme und installiert es; ist die Version schon installiert,
+tut es nichts.
+
+```bash
+bash tools/install-k9s.sh            # neueste Version
+bash tools/install-k9s.sh v0.51.0    # bestimmte Version
+k9s
+```
+
+| Taste | Wirkung |
+|---|---|
+| `:pods`, `:svc`, `:nodes`, `:deploy` | Ressourcen-Ansicht wechseln (Tab vervollständigt) |
+| `0` | alle Namespaces |
+| `/` | Liste filtern |
+| `Enter` | hineingehen (z. B. Pod → Container) |
+| `l` / `d` / `y` | Logs / describe / YAML |
+| `s` | Shell im Container |
+| `Ctrl+d` | löschen (mit Rückfrage) |
+| `?` | Hilfe |
+| `:q` | beenden |
+
+> Das *Kubernetes Dashboard* (Web-UI) ist seit Januar 2026 archiviert. Als Web-Oberfläche empfiehlt die
+> Kubernetes SIG UI stattdessen **Headlamp**.
 
 #### Alles prüfen
 
@@ -172,6 +207,7 @@ ssh -V
 ansible --version | head -1
 kubectl version --client
 helm version --short
+k9s version --short
 ```
 
 ## Einrichtung
@@ -523,6 +559,263 @@ kubectl get pods -A                # coredns: Pending, übrige Pods: Running
 Den Cluster zurücksetzen (z. B. für einen neuen Versuch): auf der VM `sudo kubeadm reset -f`, danach das
 Playbook erneut ausführen. Einfacher ist im Lab ein Neuaufbau der VM per Terraform.
 
+### 14. Pod-Netzwerk mit Cilium (WSL)
+
+Cilium ist das CNI: Es vergibt Pod-IPs und verbindet Pods über alle Knoten. Erst danach wird der Knoten
+`Ready` und CoreDNS startet. In dieser Ausbaustufe macht Cilium **nur** das Pod-Netzwerk, kube-proxy bleibt.
+
+| Einstellung (`platform/cilium/values.yaml`) | Wert | Warum |
+|---|---|---|
+| `kubeProxyReplacement` | `"false"` | kube-proxy bleibt für Services zuständig |
+| `ipam.mode` | `kubernetes` | Pod-IPs aus dem podCIDR des Knotens (aus `podSubnet` 10.244.0.0/16) statt Ciliums eigenem Bereich `10.0.0.0/8` |
+| `operator.replicas` | `1` | Standard 2 auf verschiedenen Knoten; im Ein-Knoten-Cluster bliebe einer `Pending` |
+| `hubble.enabled` | `true` | Flow-Daten werden erfasst (Relay und UI: Schritt 15) |
+
+**Version:** Cilium 1.20 läuft u. a. bei AKS und DigitalOcean mit Kubernetes 1.37. Die eingesetzte
+Chart-Version steht in `platform/cilium/install.sh` (`CILIUM_VERSION`), zusammen mit der `values.yaml` im Repo.
+Neuere Patch-Stände der 1.20-Reihe anzeigen:
+
+```bash
+helm repo add cilium https://helm.cilium.io/ && helm repo update cilium
+helm search repo cilium/cilium --versions | head -5
+```
+
+Installieren bzw. aktualisieren:
+
+```bash
+bash platform/cilium/install.sh
+kubectl -n kube-system get pods -o wide              # coredns: Running mit 10.244.x-IP
+```
+
+Das Skript zeigt zuerst, gegen welchen Cluster es läuft, prüft, dass jeder Knoten einen podCIDR hat
+(sonst findet `ipam.mode: kubernetes` keine Adressen), installiert per `helm upgrade --install` und wartet,
+bis Agent und Operator bereit sind. Eine andere Version einmalig: `CILIUM_VERSION=1.20.5 bash platform/cilium/install.sh`;
+dauerhaft: die Zeile im Skript ändern und committen.
+
+`helm upgrade --install` ist idempotent: legt Cilium beim ersten Mal an und übernimmt später Änderungen an der
+`values.yaml`. Die eingesetzte Version zeigt `helm list -n kube-system`.
+
+**Pods auf der Control Plane erlauben** – solange es keine Worker gibt:
+
+```bash
+kubectl taint nodes cp-1 node-role.kubernetes.io/control-plane:NoSchedule-
+```
+
+Kubernetes hält normale Pods per *Taint* von Control-Plane-Knoten fern. Ohne Worker bliebe jede eigene
+Anwendung `Pending`. Sobald Worker dazukommen, kann der Taint wieder gesetzt werden:
+`kubectl taint nodes cp-1 node-role.kubernetes.io/control-plane:NoSchedule`.
+
+**Funktionstest** (Pod-Netzwerk, Service über kube-proxy, DNS über CoreDNS):
+
+```bash
+kubectl run web --image=nginx --port=80
+kubectl expose pod web --port=80
+kubectl wait --for=condition=Ready pod/web --timeout=120s
+kubectl run test --image=busybox --rm -i --restart=Never -- wget -qO- http://web | head -4
+kubectl delete pod web && kubectl delete service web
+```
+
+Erwartet ist der Anfang der nginx-Startseite (`<!DOCTYPE html>`…). kubectl mischt beim Anhängen an den Pod
+Hinweise in die Ausgabe ("All commands and output … recorded", "If you don't see a command prompt …"). Ist der
+Pod schneller fertig, als kubectl sich anhängen kann, erscheint zusätzlich *couldn't attach … falling back to
+streaming logs*. Beides ist für den Test ohne Bedeutung.
+
+### 15. Hubble: Netzwerkverkehr sichtbar machen (WSL)
+
+Hubble ist das Beobachtungswerkzeug von Cilium. Es erfasst per eBPF jede Verbindung im Cluster – Quelle, Ziel,
+Port, Protokoll und ob sie **durchgelassen oder verworfen** wurde.
+
+| Teil | Aufgabe | `values.yaml` |
+|---|---|---|
+| Hubble im Cilium-Agent | erfasst die Flows auf jedem Knoten | `hubble.enabled: true` |
+| Hubble Relay | sammelt die Flows aller Knoten | `hubble.relay.enabled: true` |
+| Hubble UI | Weboberfläche: Service Map und Flow-Tabelle | `hubble.ui.enabled: true` |
+
+Aktivieren (die Werte stehen bereits in `platform/cilium/values.yaml`):
+
+```bash
+bash platform/cilium/install.sh
+kubectl -n kube-system rollout status deploy/hubble-relay
+kubectl -n kube-system rollout status deploy/hubble-ui
+```
+
+Aufrufen per Port-Forwarding (läuft, bis es mit `Ctrl+C` beendet wird):
+
+```bash
+kubectl -n kube-system port-forward svc/hubble-ui 12000:80
+```
+
+Danach im Browser unter Windows `http://localhost:12000` öffnen (im Mirrored-Modus teilen sich WSL und Windows
+`localhost`). Namespace oben links wählen, z. B. `kube-system` oder `default`.
+
+Verkehr zum Anschauen erzeugen, in einem zweiten Terminal:
+
+```bash
+kubectl run web --image=nginx --port=80 && kubectl expose pod web --port=80
+kubectl wait --for=condition=Ready pod/web --timeout=120s
+kubectl run client --image=busybox --restart=Never -- \
+  sh -c 'while true; do wget -qO- http://web >/dev/null; sleep 2; done'
+# ... in der UI zuschauen, danach aufräumen:
+kubectl delete pod client web --now && kubectl delete service web
+```
+
+Im Namespace `default` zeigt die Service Map dann `client` → `web`, dazu die DNS-Anfragen an CoreDNS in `kube-system`.
+Die Flow-Tabelle zeigt jede Verbindung mit dem Ergebnis *forwarded* oder *dropped*. Verworfene Pakete samt
+Grund (z. B. eine Network Policy) sind später der wichtigste Einstieg in die Fehlersuche.
+
+### 16. Worker-Knoten (PowerShell + WSL)
+
+**1. VMs anlegen** – in `terraform/nodes.tf` die Worker in `local.nodes` eintragen bzw. einkommentieren:
+
+```hcl
+nodes = {
+  cp-1     = { role = "control_plane", ip = "192.168.250.11", cpus = 2, memory_gb = 4 },
+  worker-1 = { role = "worker",        ip = "192.168.250.12", cpus = 2, memory_gb = 2 },
+  worker-2 = { role = "worker",        ip = "192.168.250.13", cpus = 2, memory_gb = 2 },
+}
+```
+
+```powershell
+terraform plan     # erwartet: 7 to add, 1 to destroy (je Worker Disk, ISO, VM; das Inventory wird neu geschrieben)
+terraform apply
+```
+
+Das eine *destroy* betrifft nur `local_file.ansible_inventory`: Bei `local_file` erzwingt jede Inhaltsänderung
+ein Ersetzen der Datei. Steht dort eine bestehende VM, abbrechen.
+Admin-Rechte sind dafür nicht nötig, solange das NAT unverändert bleibt. Speicherbedarf jetzt insgesamt 8 GB RAM.
+
+**2. Konfigurieren** (WSL, Repo-Root, gültiges Zertifikat). Die ersten beiden Playbooks laufen auf allen
+Knoten; auf `cp-1` ändern sie nichts mehr:
+
+```bash
+INV=ansible/inventory/hosts.yml
+ansible -i $INV all -m ping                 # neue Host-Schlüssel werden automatisch übernommen
+ansible-playbook -i $INV ansible/prepare.yml
+ansible-playbook -i $INV ansible/kubernetes.yml
+ansible-playbook -i $INV ansible/workers.yml
+```
+
+`workers.yml`
+
+1. erzeugt auf der Control Plane einen Join-Befehl mit einem Token, das 15 Minuten gilt,
+2. führt `kubeadm join` auf jedem Worker aus, der noch nicht zum Cluster gehört (erkennbar an `/etc/kubernetes/kubelet.conf`),
+3. wartet, bis der Knoten `Ready` ist, und setzt das Label `node-role.kubernetes.io/worker`,
+4. setzt den Taint der Control Plane wieder: Anwendungen laufen ab jetzt nur noch auf den Workern.
+
+**3. Prüfen**
+
+```bash
+kubectl get nodes -o wide          # cp-1 control-plane, worker-1/2 worker, alle Ready
+kubectl -n kube-system get pods -o wide -l k8s-app=cilium   # ein Cilium-Agent pro Knoten
+```
+
+Pod-Verkehr über Knotengrenzen (läuft über einen Tunnel zwischen den VMs) – zwei Pods auf verschiedenen Workern:
+
+```bash
+kubectl create deployment web --image=nginx --replicas=2
+kubectl expose deployment web --port=80
+kubectl rollout status deploy/web
+kubectl get pods -o wide -l app=web             # auf worker-1 und worker-2 verteilt
+kubectl run client --image=busybox --restart=Never -- \
+  sh -c 'while true; do wget -qO- http://web >/dev/null; sleep 2; done'
+# Hubble UI: client -> web, Flows zu beiden Pods
+kubectl delete pod client --now && kubectl delete deployment,service web
+```
+
+Optional, jetzt da es mehrere Knoten gibt: `operator.replicas` in `platform/cilium/values.yaml` auf `2` setzen
+(Ausfallsicherheit des Cilium-Operators) und `bash platform/cilium/install.sh`.
+
+## Cluster neu aufbauen
+
+Das Lab ist bewusst wegwerfbar: Alles, was die VMs und den Cluster ausmacht, steht im Repo. Ein Neuaufbau
+dauert etwa 15–20 Minuten, die meiste Zeit davon Paket-Downloads.
+
+**Bleibt beim Neuaufbau erhalten** (einmalige Einrichtung, siehe Schritte 1–3 und 5–6):
+
+| Was | Wo |
+|---|---|
+| WinRM-Konfiguration | Windows-Host |
+| Basis-Image | `base_image_path` |
+| SSH-CA und Benutzerschlüssel | WSL `~/.ssh-ca`, `~/.ssh` |
+| `terraform.tfvars`, Werkzeuge in WSL, `.wslconfig` | lokal |
+
+**Wird neu erzeugt:** VMs, Disks, cloud-init-ISOs, Ansible-Inventory, Cluster (neue Zertifikate, neue
+kubeconfig), Host-Schlüssel der VMs.
+
+### Variante A: nur die VMs (empfohlen)
+
+Switch und NAT bleiben stehen, keine Admin-Rechte nötig.
+
+**Abbauen** (PowerShell, Ordner `terraform`):
+
+```powershell
+terraform destroy -target='hyperv_machine_instance.node' -target='hyperv_vhd.os' -target='hyperv_iso_image.cidata'
+```
+
+Terraform warnt bei `-target`, dass nur ein Teil abgebaut wird. Das ist hier gewollt.
+
+### Variante B: alles inklusive Netzwerk
+
+**Abbauen** (Admin-PowerShell, Ordner `terraform`, wegen des NAT-Skripts):
+
+```powershell
+terraform destroy
+```
+
+Entfernt VMs, Disks, ISOs, Inventory, Switch, Host-IP und NAT; das Basis-Image bleibt.
+Für ein endgültiges Aufräumen zusätzlich den VM-Ordner (`vm_root`) und ggf. die Route bzw. Einträge in der
+Hosts-Datei entfernen.
+
+### Aufbauen (beide Varianten)
+
+**1. Infrastruktur** (PowerShell, Ordner `terraform`; bei Variante B als Admin):
+
+```powershell
+..\host\Terraform-SetUserEnv.ps1
+terraform apply
+terraform plan       # erwartet: No changes
+```
+
+**2. Alte Host-Schlüssel entfernen** (WSL) – die neuen VMs haben neue Schlüssel unter denselben IPs, und
+`StrictHostKeyChecking=accept-new` lehnt geänderte Schlüssel ab:
+
+```bash
+for ip in 192.168.250.11 192.168.250.12 192.168.250.13; do ssh-keygen -R "$ip"; done
+```
+
+**3. Zertifikat** (falls abgelaufen) und warten, bis cloud-init fertig ist (1–2 Minuten nach dem `apply`):
+
+```bash
+cd /mnt/c/<pfad-zum-repo>
+eval "$(ssh-agent -s)" && bash ssh/sign-cert.sh -a
+INV=ansible/inventory/hosts.yml
+ansible -i $INV all -m ping
+```
+
+**4. Cluster aufbauen – Reihenfolge beachten:**
+
+```bash
+ansible-playbook -i $INV ansible/prepare.yml
+ansible-playbook -i $INV ansible/kubernetes.yml
+ansible-playbook -i $INV ansible/control-plane.yml
+bash platform/cilium/install.sh
+ansible-playbook -i $INV ansible/workers.yml
+kubectl get nodes -o wide
+```
+
+Cilium kommt **vor** `workers.yml`: Ohne CNI wird kein Knoten `Ready`, und `workers.yml` wartet genau darauf.
+Hubble Relay und UI bleiben bis zum Join der Worker `Pending`, weil die Control Plane per Taint für sie gesperrt
+ist; danach starten sie von selbst. Ein Entfernen des Taints wie in Schritt 14 ist mit Workern nicht nötig.
+
+`control-plane.yml` überschreibt `~/.kube/k8s-lab.conf` mit der kubeconfig des neuen Clusters.
+
+**5. Prüfen**
+
+```bash
+kubectl get nodes                           # 3 Knoten Ready
+kubectl get pods -A                         # alles Running
+```
+
 ## Eigenheiten des Hyper-V-Providers
 
 Der Provider `taliesins/hyperv` hat einige Fehler und Doku-Abweichungen. Die Konfiguration in `nodes.tf`
@@ -548,15 +841,6 @@ terraform apply -replace='hyperv_machine_instance.node["cp-1"]'
 
 Nach jedem `apply` sollte ein weiteres `terraform plan` **No changes** zeigen. Ist das nicht so, liegt ein
 Dauer-Diff vor: vor dem nächsten `apply` prüfen, was der Provider ändern will.
-
-## Abbau
-
-```powershell
-cd terraform
-terraform destroy
-```
-
-Entfernt Switch, Host-IP und NAT. Das Basis-Image bleibt erhalten.
 
 ## Netzwerk
 
@@ -608,6 +892,13 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [x] Ansible: Grundgerüst, Inventory aus Terraform
 - [x] Ansible: Basis-Konfiguration (`prepare.yml`, Rolle `common`), idempotent
 - [x] Ansible: containerd, Kubernetes-Pakete (`kubernetes.yml`)
-- [ ] Ansible: `kubeadm init` auf der Control Plane, kubeconfig nach WSL (`control-plane.yml`)
-- [ ] Helm: Cilium als CNI, danach Argo CD
+- [x] Ansible: `kubeadm init` auf der Control Plane, kubeconfig nach WSL (`control-plane.yml`)
+- [x] Helm: Cilium 1.20 als CNI (`platform/cilium`), Pod-Netzwerk mit kube-proxy
+- [x] Cilium-Version zusammen mit der `values.yaml` im Repo festhalten (`install.sh`)
+- [x] Hubble Relay und UI (Schritt 15)
+- [x] Worker-Knoten (`kubeadm join`), danach Taint der Control Plane wieder setzen (Schritt 16)
+- [ ] Neuaufbau in einem Durchgang (Skript bzw. `site.yml` für die Schritte nach `terraform apply`)
+- [ ] **Entscheidung offen:** kube-proxy behalten oder durch Cilium ersetzen (L2 Announcements für LoadBalancer-IPs setzen den Ersatz voraus)
+- [ ] LoadBalancer-IPs und Gateway API (vorerst über eine statische Route auf dem Windows-Host)
+- [ ] Argo CD (eigenes Repo `k8s-gitops`)
 - [ ] RHEL-Image (Developer Subscription) als zweite Distribution

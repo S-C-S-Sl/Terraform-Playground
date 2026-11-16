@@ -1,0 +1,29 @@
+# Cilium für das k8s-Lab (Helm-Chart cilium/cilium).
+# Pod-Netzwerk und Hubble (Relay + UI). kube-proxy bleibt aktiv (siehe README, Schritte 14 und 15).
+#
+# Installation/Update (WSL, im Repo-Root):  bash platform/cilium/install.sh
+# Enthält nur Abweichungen von den Standardwerten der Chart:
+#   helm show values cilium/cilium --version <version>
+
+# kube-proxy übernimmt weiterhin die Service-Weiterleitung
+kubeProxyReplacement: "false"   # in der Chart als Zeichenkette definiert (Standard)
+
+ipam:
+  # Pod-IPs aus dem podCIDR, den Kubernetes jedem Knoten zuteilt
+  # (abgeleitet aus podSubnet 10.244.0.0/16 der kubeadm-Konfiguration)
+  mode: kubernetes
+
+operator:
+  # Standard sind 2 Replikate auf verschiedenen Knoten; im Ein-Knoten-Cluster
+  # bliebe das zweite dauerhaft Pending
+  replicas: 1
+
+hubble:
+  # Flow-Daten im Agenten erfassen (per eBPF, jede Verbindung mit Ergebnis)
+  enabled: true
+  relay:
+    # sammelt die Flow-Daten aller Knoten an einer Stelle
+    enabled: true
+  ui:
+    # Weboberfläche (Service Map, Flow-Tabelle); Aufruf per port-forward, siehe README
+    enabled: true

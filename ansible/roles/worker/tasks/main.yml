@@ -1,0 +1,32 @@
+- name: Prüfen, ob der Knoten bereits zum Cluster gehört
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: worker_kubelet_conf
+
+# Ein Token mit kurzer Laufzeit pro Lauf; kubeadm räumt abgelaufene Tokens selbst auf
+- name: Join-Befehl auf der Control Plane erzeugen
+  ansible.builtin.command: kubeadm token create --print-join-command --ttl 15m
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  run_once: true
+  register: worker_join_command
+  changed_when: false
+
+- name: Knoten aufnehmen (kubeadm join)
+  ansible.builtin.command: "{{ worker_join_command.stdout }}"
+  when: not worker_kubelet_conf.stat.exists
+  changed_when: true
+
+- name: Warten, bis der Knoten Ready ist
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  changed_when: false
+
+# Rein informativ: füllt die Spalte ROLES in "kubectl get nodes"
+- name: Rolle "worker" als Label setzen
+  ansible.builtin.command: >-
+    kubectl --kubeconfig /etc/kubernetes/admin.conf
+    label node {{ inventory_hostname }} node-role.kubernetes.io/worker= --overwrite
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  changed_when: false

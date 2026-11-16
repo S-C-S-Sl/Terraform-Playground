@@ -1,0 +1,25 @@
+# Nimmt die Worker-Knoten in den Cluster auf (kubeadm join) und setzt danach
+# den Taint der Control Plane wieder. Setzt prepare.yml, kubernetes.yml und
+# control-plane.yml voraus.
+#
+# Aufruf (WSL, im Repo-Root):
+#   ansible-playbook -i ansible/inventory/hosts.yml ansible/workers.yml
+- name: Worker in den Cluster aufnehmen
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+# Solange es keine Worker gab, durften Pods auf der Control Plane laufen.
+# Mit Workern gilt wieder der Standard: Control Plane nur für Cluster-Komponenten.
+- name: Control Plane wieder für Anwendungen sperren
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Taint der Control Plane setzen
+      ansible.builtin.command: >-
+        kubectl --kubeconfig /etc/kubernetes/admin.conf
+        taint nodes {{ item }} node-role.kubernetes.io/control-plane:NoSchedule --overwrite
+      loop: "{{ groups['control_plane'] }}"
+      when: groups['workers'] | default([]) | length > 0
+      changed_when: false

@@ -1,8 +1,8 @@
 locals {
   nodes = {
     cp-1 = {  role = "control_plane", ip = "192.168.250.11", cpus = 2, memory_gb = 4 },
-    #worker-1 = { role = "worker", ip = "192.168.250.12", cpus = 2, memory_gb = 2 },
-    #worker-2 = { role = "worker", ip = "192.168.250.13", cpus = 2, memory_gb = 2 },
+    worker-1 = { role = "worker", ip = "192.168.250.12", cpus = 2, memory_gb = 2 },
+    worker-2 = { role = "worker", ip = "192.168.250.13", cpus = 2, memory_gb = 2 },
   }
 
   lab_prefix_length = local.lab_net.prefix_length
