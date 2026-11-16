@@ -122,7 +122,7 @@ resource "hyperv_machine_instance" "node" {
 
 
   lifecycle {
-    # CPU-Feineinstellungen verwaltet Hyper-V (u. a. hostabhängige NUMA-Werte)
+    # Umgehungen für Provider-Fehler, siehe README "Eigenheiten des Hyper-V-Providers"
     ignore_changes = [vm_processor, network_adaptors, vm_firmware[0].boot_order]
   }
 

@@ -1,0 +1,4 @@
+# Ubuntu 24.04 liefert containerd 2.x über noble-updates.
+# Kubernetes >= 1.36 setzt containerd 2.x voraus.
+containerd_package: containerd
+containerd_config: /etc/containerd/config.toml

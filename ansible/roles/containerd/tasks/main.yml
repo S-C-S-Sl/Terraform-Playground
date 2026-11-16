@@ -1,0 +1,54 @@
+- name: containerd installieren
+  ansible.builtin.apt:
+    name: "{{ containerd_package }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Konfigurationsverzeichnis anlegen
+  ansible.builtin.file:
+    path: "{{ containerd_config | dirname }}"
+    state: directory
+    mode: "0755"
+
+# Eine vollständige Konfiguration erzeugen, falls keine existiert oder sie die
+# runc-Optionen nicht enthält (z. B. eine minimale Datei aus dem Paket).
+- name: Prüfen, ob die Konfiguration die runc-Optionen enthält
+  ansible.builtin.command: grep -q SystemdCgroup {{ containerd_config }}
+  register: containerd_config_check
+  changed_when: false
+  failed_when: false
+
+- name: Standardkonfiguration erzeugen
+  ansible.builtin.shell: containerd config default > {{ containerd_config }}
+  when: containerd_config_check.rc != 0
+  changed_when: true
+  notify: containerd neu starten
+
+# kubelet und containerd müssen denselben cgroup-Treiber verwenden (systemd)
+- name: systemd als cgroup-Treiber für runc
+  ansible.builtin.replace:
+    path: "{{ containerd_config }}"
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: containerd neu starten
+
+- name: crictl auf containerd ausrichten
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    content: |
+      # Verwaltet durch Ansible (roles/containerd)
+      runtime-endpoint: unix:///run/containerd/containerd.sock
+      image-endpoint: unix:///run/containerd/containerd.sock
+    mode: "0644"
+
+- name: containerd starten und beim Boot aktivieren
+  ansible.builtin.systemd_service:
+    name: containerd
+    state: started
+    enabled: true
+
+# Neustart jetzt statt am Ende des Plays, damit die Kubernetes-Rolle
+# eine korrekt konfigurierte Runtime vorfindet
+- name: Ausstehende Neustarts ausführen
+  ansible.builtin.meta: flush_handlers

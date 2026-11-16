@@ -1,0 +1,10 @@
+# Minor-Version: bestimmt das Paket-Repository (pkgs.k8s.io hat eins pro Minor-Version).
+# Installiert wird der jeweils neueste Patch-Stand dieser Version.
+kubernetes_version: "1.37"
+
+kubernetes_packages:
+  - kubelet
+  - kubeadm
+  - kubectl
+
+kubernetes_repo_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/"

@@ -1,0 +1,11 @@
+# Container-Runtime und Kubernetes-Pakete auf allen Lab-VMs.
+# Setzt prepare.yml voraus (Kernel-Module, sysctl, kein Swap).
+#
+# Aufruf (WSL, im Repo-Root):
+#   ansible-playbook -i ansible/inventory/hosts.yml ansible/kubernetes.yml
+- name: Container-Runtime und Kubernetes-Pakete
+  hosts: all
+  become: true
+  roles:
+    - containerd
+    - kubernetes

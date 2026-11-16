@@ -1,0 +1,35 @@
+- name: Kubernetes-Paketquelle einbinden (pkgs.k8s.io, v{{ kubernetes_version }})
+  ansible.builtin.deb822_repository:
+    name: kubernetes
+    types: deb
+    uris: "{{ kubernetes_repo_url }}"
+    suites: /
+    signed_by: "{{ kubernetes_repo_url }}Release.key"
+  register: kubernetes_repo
+
+- name: Paketquellen aktualisieren
+  ansible.builtin.apt:
+    update_cache: true
+  when: kubernetes_repo.changed
+
+# allow_change_held_packages: bei einem späteren Lauf sind die Pakete gesperrt (hold).
+# state: present installiert nur, wenn sie fehlen; ein Update löst das nie aus.
+- name: kubelet, kubeadm und kubectl installieren
+  ansible.builtin.apt:
+    name: "{{ kubernetes_packages }}"
+    state: present
+    allow_change_held_packages: true
+
+# Kubernetes wird kontrolliert per kubeadm aktualisiert, nie durch apt upgrade
+- name: Pakete gegen automatische Updates sperren
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ kubernetes_packages }}"
+
+# Der kubelet startet danach in einer Schleife neu, bis kubeadm init/join
+# ihn konfiguriert. Das ist erwartet.
+- name: kubelet beim Boot aktivieren
+  ansible.builtin.systemd_service:
+    name: kubelet
+    enabled: true

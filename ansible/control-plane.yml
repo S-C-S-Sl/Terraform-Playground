@@ -1,0 +1,10 @@
+# Initialisiert den Cluster auf dem ersten Control-Plane-Knoten (kubeadm init)
+# und holt die kubeconfig nach WSL. Setzt prepare.yml und kubernetes.yml voraus.
+#
+# Aufruf (WSL, im Repo-Root):
+#   ansible-playbook -i ansible/inventory/hosts.yml ansible/control-plane.yml
+- name: Control Plane initialisieren
+  hosts: control_plane[0]
+  become: true
+  roles:
+    - control_plane

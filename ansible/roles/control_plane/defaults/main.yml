@@ -1,0 +1,10 @@
+control_plane_cluster_name: k8s-lab
+
+# Netzbereiche innerhalb des Clusters (dürfen sich nicht mit Lab- oder Firmennetzen überschneiden)
+control_plane_pod_subnet: 10.244.0.0/16
+control_plane_service_subnet: 10.96.0.0/12
+
+control_plane_kubeadm_config: /etc/kubernetes/kubeadm-config.yaml
+
+# Ziel der kubeconfig auf dem Ansible-Rechner (WSL)
+control_plane_kubeconfig_local: "{{ lookup('env', 'HOME') }}/.kube/k8s-lab.conf"

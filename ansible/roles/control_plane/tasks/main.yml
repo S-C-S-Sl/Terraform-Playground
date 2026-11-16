@@ -1,0 +1,79 @@
+- name: Prüfen, ob der Cluster bereits initialisiert ist
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: control_plane_admin_conf
+
+# Die Control Plane bekommt genau die Version des installierten kubeadm
+- name: Installierte kubeadm-Version ermitteln
+  ansible.builtin.command: kubeadm version -o short
+  register: control_plane_kubeadm_version
+  changed_when: false
+
+- name: kubeadm-Konfiguration schreiben
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: "{{ control_plane_kubeadm_config }}"
+    mode: "0600"
+
+- name: kubeadm-Konfiguration prüfen
+  ansible.builtin.command: kubeadm config validate --config {{ control_plane_kubeadm_config }}
+  changed_when: false
+
+# --- Initialisierung (nur beim ersten Lauf) ---------------------------------
+- name: Images der Control Plane vorab laden
+  ansible.builtin.command: kubeadm config images pull --config {{ control_plane_kubeadm_config }}
+  when: not control_plane_admin_conf.stat.exists
+  changed_when: true
+
+- name: Cluster initialisieren (kubeadm init)
+  ansible.builtin.command: kubeadm init --config {{ control_plane_kubeadm_config }}
+  when: not control_plane_admin_conf.stat.exists
+  changed_when: true
+
+- name: Warten, bis der API-Server bereit ist
+  ansible.builtin.command: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw /readyz
+  register: control_plane_readyz
+  until: control_plane_readyz.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+
+# --- kubeconfig auf der VM (Benutzer ubuntu) --------------------------------
+- name: kubeconfig-Verzeichnis für {{ ansible_user }}
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: kubeconfig für {{ ansible_user }}
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+
+# --- kubeconfig nach WSL ------------------------------------------------------
+- name: Lokales kubeconfig-Verzeichnis anlegen
+  ansible.builtin.file:
+    path: "{{ control_plane_kubeconfig_local | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: kubeconfig nach WSL holen
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ control_plane_kubeconfig_local }}"
+    flat: true
+
+- name: Rechte der lokalen kubeconfig einschränken
+  ansible.builtin.file:
+    path: "{{ control_plane_kubeconfig_local }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false

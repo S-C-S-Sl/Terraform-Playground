@@ -5,7 +5,7 @@ Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
 > Status: Netzwerk und erste VM (`cp-1`) laufen, Zugang per SSH-Zertifikat, Ansible-Basis-Konfiguration angewendet.
-> Als Nächstes: containerd, Kubernetes-Pakete und `kubeadm init`.
+> containerd und Kubernetes-Pakete installiert. Als Nächstes: `kubeadm init` (`control-plane.yml`), danach Cilium.
 
 ## Struktur
 
@@ -22,9 +22,14 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   └── sign-cert.sh              # pro Sitzung: kurzlebiges SSH-Zertifikat ausstellen
 ├── ansible/                      # Konfiguration der VMs (WSL)
 │   ├── prepare.yml               # Playbook: Basis-Konfiguration aller VMs
+│   ├── kubernetes.yml            # Playbook: containerd + Kubernetes-Pakete
+│   ├── control-plane.yml         # Playbook: kubeadm init, kubeconfig nach WSL
 │   ├── requirements.yml          # benötigte Collections
 │   ├── roles/
-│   │   └── common/               # Updates, Grundpakete, Swap, Kernel-Module, sysctl
+│   │   ├── common/               # Updates, Grundpakete, Swap, Kernel-Module, sysctl
+│   │   ├── containerd/           # Container-Runtime (systemd-cgroups)
+│   │   ├── kubernetes/           # kubelet, kubeadm, kubectl aus pkgs.k8s.io, gesperrt
+│   │   └── control_plane/        # kubeadm-Konfiguration (Template), init, kubeconfig
 │   └── inventory/
 │       ├── hosts.yml             # von Terraform erzeugt, nicht eingecheckt
 │       └── group_vars/all.yml    # Verbindung: Benutzer, Schlüssel, SSH-Optionen
@@ -56,7 +61,7 @@ Bash-Skripte werden mit `bash <skript>` aufgerufen, nicht über PowerShell. Die 
 
 - Windows mit aktiviertem **Hyper-V**
 - **Terraform** ≥ 1.5 (`winget install Hashicorp.Terraform`)
-- **WSL** (Ubuntu 24.04) mit `qemu-utils`, `curl`, `openssh-client` und **Ansible** (Schritt 9)
+- **WSL** (Ubuntu 24.04) mit den Werkzeugen aus *Werkzeuge in WSL* (unten)
 - Admin-Rechte auf dem Host
 - Mindestens 40–50 GB freier Speicher für Images und VMs
 - **WSL im Mirrored-Netzwerkmodus** (siehe unten)
@@ -89,6 +94,85 @@ ip route                       # enthält 192.168.250.0/24
 - Gilt für **alle** WSL-Distributionen, auch für Docker Desktop. Danach kurz prüfen, ob bestehende Container noch erreichbar sind.
 - Voraussetzung ist Windows 11 22H2 oder neuer. Auf Firmenrechnern kann der Modus per Richtlinie festgelegt sein.
 - `wsl --shutdown` beendet auch den ssh-agent in WSL. Danach das Zertifikat erneut laden (Schritt 4).
+
+### Werkzeuge in WSL
+
+Alles in der **Ubuntu-WSL** (`wsl -d Ubuntu-24.04`), als normaler Benutzer, nicht als root.
+
+| Werkzeug | Wofür | Installation |
+|---|---|---|
+| `qemu-utils`, `curl`, `gpg` | Basis-Image konvertieren, Downloads prüfen | apt |
+| `openssh-client` | Schlüssel, Zertifikate, SSH | apt (meist vorinstalliert) |
+| `whois` | enthält `mkpasswd` für den Konsolen-Passwort-Hash | apt |
+| Ansible | Konfiguration der VMs | `pipx` |
+| `kubectl` | Cluster bedienen | Binärdatei von `dl.k8s.io`, Version passend zum Cluster |
+| Helm | Charts installieren (Cilium usw.) | apt-Repository des Helm-Projekts |
+
+#### Basis-Pakete
+
+```bash
+sudo apt update
+sudo apt install -y qemu-utils curl gpg apt-transport-https openssh-client whois pipx
+```
+
+#### Ansible
+
+Per `pipx`, damit Ansible aktuell ist und nicht mit den Python-Paketen des Systems kollidiert:
+
+```bash
+pipx install --include-deps ansible
+pipx ensurepath
+exec bash                # Shell neu starten, damit ~/.local/bin im PATH ist
+ansible --version
+```
+
+Das Paket `ansible` enthält neben `ansible-core` die benötigten Collections (`ansible.posix`, `community.general`).
+Aktualisieren: `pipx upgrade --include-injected ansible`.
+
+**Installiert, aber `command not found`?** `pipx` legt die Befehle unter `~/.local/bin` ab. Fehlt das im `PATH`,
+meldet `pipx install` trotzdem *already seems to be installed*. Abhilfe: `pipx ensurepath`, dann `exec bash`.
+Den Vorschlag `sudo apt install ansible-core` aus der Fehlermeldung **nicht** befolgen: Das legt eine zweite,
+ältere Installation ohne die Collections daneben.
+
+#### kubectl
+
+Version passend zum Cluster wählen (`kubeadm version -o short` auf der VM). kubectl darf eine Minor-Version
+älter oder neuer sein als der Cluster, gleich ist am einfachsten.
+
+```bash
+V=v1.37.2
+curl -LO "https://dl.k8s.io/release/$V/bin/linux/amd64/kubectl"
+curl -LO "https://dl.k8s.io/release/$V/bin/linux/amd64/kubectl.sha256"
+echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check      # kubectl: OK
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && rm kubectl kubectl.sha256
+kubectl version --client
+```
+
+Aktualisieren: dieselben Befehle mit neuer Version.
+
+#### Helm
+
+Aus dem offiziellen apt-Repository des Helm-Projekts; Updates kommen danach mit `apt upgrade`:
+
+```bash
+curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey \
+  | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" \
+  | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+sudo apt update
+sudo apt install -y helm
+helm version
+```
+
+#### Alles prüfen
+
+```bash
+qemu-img --version | head -1
+ssh -V
+ansible --version | head -1
+kubectl version --client
+helm version --short
+```
 
 ## Einrichtung
 
@@ -278,36 +362,7 @@ getent hosts archive.ubuntu.com   # DNS
 
 ### 9. Ansible einrichten (einmalig, WSL)
 
-Prüfen, ob Ansible schon installiert ist:
-
-```bash
-ansible --version        # "command not found" -> installieren
-```
-
-Installation per `pipx`, damit Ansible aktuell ist und nicht mit den Python-Paketen des Systems kollidiert:
-
-```bash
-sudo apt update && sudo apt install -y pipx
-pipx install --include-deps ansible
-pipx ensurepath
-exec bash                # oder neues Terminal, damit ~/.local/bin im PATH ist
-ansible --version
-```
-
-Das Paket `ansible` enthält neben `ansible-core` auch die Collections, die die Playbooks brauchen
-(`ansible.posix`, `community.general`). Aktualisieren: `pipx upgrade --include-injected ansible`.
-
-**Installiert, aber `command not found`?** `pipx` legt die Befehle unter `~/.local/bin` ab. Steht das nicht
-im `PATH`, findet die Shell sie nicht, und `pipx install` meldet trotzdem *already seems to be installed*:
-
-```bash
-pipx ensurepath          # trägt ~/.local/bin in ~/.bashrc ein
-exec bash                # Shell neu starten, damit es greift
-ansible --version
-```
-
-Den Vorschlag `sudo apt install ansible-core` aus der Fehlermeldung **nicht** befolgen: Das legt eine zweite,
-ältere Installation ohne die benötigten Collections daneben.
+Ansible installieren: siehe *Werkzeuge in WSL* unter Voraussetzungen.
 
 **Inventory angeben:** In dieser README wird das Inventory explizit mit `-i` übergeben. Wer das nicht
 bei jedem Befehl schreiben will, setzt es als Standard (dann kann `-i` entfallen, ein angegebenes `-i` hat Vorrang):
@@ -376,6 +431,98 @@ ansible-playbook -i ansible/inventory/hosts.yml ansible/prepare.yml             
 und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
 `ansible-galaxy collection install -r ansible/requirements.yml`.
 
+### 12. Container-Runtime und Kubernetes-Pakete (WSL)
+
+Das Playbook `kubernetes.yml` wendet die Rollen `containerd` und `kubernetes` auf alle VMs an.
+Voraussetzung ist Schritt 11.
+
+| Rolle | Was | Warum |
+|---|---|---|
+| `containerd` | Paket `containerd` aus Ubuntu (`noble-updates`, Version 2.x) | Kubernetes ab 1.36 setzt containerd 2.x voraus |
+| | vollständige `config.toml` erzeugen, `SystemdCgroup = true` | kubelet und containerd müssen denselben cgroup-Treiber nutzen |
+| | `/etc/crictl.yaml` | `crictl` spricht ohne weitere Angaben mit containerd |
+| `kubernetes` | Paketquelle `pkgs.k8s.io` für die Minor-Version (`kubernetes_version`, Standard `1.37`) | offizielles Repository, eines pro Minor-Version |
+| | `kubelet`, `kubeadm`, `kubectl` installieren und per `apt-mark hold` sperren | Kubernetes wird kontrolliert per `kubeadm upgrade` aktualisiert, nie durch `apt upgrade` |
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.yml ansible/kubernetes.yml --check --diff
+ansible-playbook -i ansible/inventory/hosts.yml ansible/kubernetes.yml
+ansible-playbook -i ansible/inventory/hosts.yml ansible/kubernetes.yml     # erwartet: changed=0
+```
+
+Im Trockenlauf scheitern Tasks, die auf die erst noch einzubindende Paketquelle angewiesen sind. Das ist dort normal.
+
+Prüfen auf der VM:
+
+```bash
+containerd --version                                  # 2.x
+sudo containerd config dump | grep SystemdCgroup      # SystemdCgroup = true
+kubeadm version -o short
+apt-mark showhold                                     # kubeadm, kubectl, kubelet
+systemctl status kubelet                              # "activating (auto-restart)" ist erwartet
+```
+
+Der kubelet startet bis zum `kubeadm init` bzw. `kubeadm join` in einer Schleife neu, weil ihm noch die
+Konfiguration fehlt. Das ist kein Fehler.
+
+Andere Kubernetes-Version: `kubernetes_version` in `roles/kubernetes/defaults/main.yml` oder per
+`-e kubernetes_version=1.36` setzen. Ein Wechsel auf einem laufenden Cluster ist ein Upgrade und gehört zu `kubeadm upgrade`.
+
+**Warum die Pakete gesperrt sind:** Ein Kubernetes-Update muss in fester Reihenfolge laufen (erst `kubeadm`,
+dann `kubeadm upgrade apply` für die Control Plane, danach `kubelet`/`kubectl` Knoten für Knoten), und der
+kubelet darf nie neuer sein als der API-Server. Ohne Sperre würde jedes `apt upgrade` – auch das in `prepare.yml` –
+die Pakete außer der Reihe aktualisieren.
+
+### 13. Control Plane initialisieren (WSL)
+
+Das Playbook `control-plane.yml` läuft auf dem ersten Host der Gruppe `control_plane`:
+
+1. schreibt `/etc/kubernetes/kubeadm-config.yaml` aus `roles/control_plane/templates/kubeadm-config.yaml.j2`
+   und prüft sie mit `kubeadm config validate`,
+2. lädt die Images und führt `kubeadm init` aus – **nur beim ersten Lauf** (erkennbar an `/etc/kubernetes/admin.conf`),
+3. richtet die kubeconfig für `ubuntu` auf der VM ein und holt sie nach WSL: `~/.kube/k8s-lab.conf`.
+
+| Einstellung | Wert | Variable (`roles/control_plane/defaults/main.yml`) |
+|---|---|---|
+| Kubernetes-Version | wie das installierte `kubeadm` | – |
+| API-Server | `<ip-von-cp-1>:6443` | – |
+| Pod-Netz | `10.244.0.0/16` | `control_plane_pod_subnet` |
+| Service-Netz | `10.96.0.0/12` | `control_plane_service_subnet` |
+| kube-proxy | wird installiert (Standard) | – |
+
+Pod- und Service-Netz dürfen sich nicht mit dem Lab-Netz oder Firmennetzen überschneiden. Prüfen auf dem Host:
+`Get-NetRoute -AddressFamily IPv4 | Where-Object DestinationPrefix -like "10.*"`. Netze hinter dem
+Standard-Gateway oder nur per VPN sichtbare Netze erscheinen dort nicht.
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.yml ansible/control-plane.yml
+ansible-playbook -i ansible/inventory/hosts.yml ansible/control-plane.yml   # erwartet: changed=0
+```
+
+**kubectl in WSL** (Installation siehe *Werkzeuge in WSL*), dann die kubeconfig als Standard setzen:
+
+```bash
+echo 'export KUBECONFIG=$HOME/.kube/k8s-lab.conf' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Helm nutzt dieselbe kubeconfig. Test: `helm list -A` (leer, aber ohne Fehler).
+
+Prüfen:
+
+```bash
+kubectl get nodes -o wide          # cp-1  NotReady  control-plane
+kubectl get pods -A                # coredns: Pending, übrige Pods: Running
+```
+
+`NotReady` und `Pending` bei CoreDNS sind erwartet: Es gibt noch kein Pod-Netzwerk (CNI). Das kommt mit Cilium.
+
+> `admin.conf` ist die Administrator-kubeconfig mit vollen Rechten auf den Cluster. Sie liegt nur in WSL
+> (`~/.kube`) und auf der VM, niemals im Repo.
+
+Den Cluster zurücksetzen (z. B. für einen neuen Versuch): auf der VM `sudo kubeadm reset -f`, danach das
+Playbook erneut ausführen. Einfacher ist im Lab ein Neuaufbau der VM per Terraform.
+
 ## Eigenheiten des Hyper-V-Providers
 
 Der Provider `taliesins/hyperv` hat einige Fehler und Doku-Abweichungen. Die Konfiguration in `nodes.tf`
@@ -439,7 +586,7 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 | `Identity file ... not accessible` und `Permission denied (publickey)` | SSH wurde unter Windows gestartet. Schlüssel und Zertifikat liegen in der Ubuntu-WSL. |
 | `ssh-keygen: command not found` oder Prompt `root@...` | Falsche WSL-Distribution (Standard ist evtl. eine andere). `wsl -l -v` prüfen, `wsl -d Ubuntu-24.04` öffnen. |
 | `ansible all -m ping` scheitert mit `Permission denied`, das Playbook funktioniert | `group_vars/` liegt neben dem Playbook statt neben dem Inventory. Ad-hoc-Befehle finden es dort nicht und verbinden sich als WSL-Benutzer statt als `ubuntu`. Richtig: `ansible/inventory/group_vars/all.yml` |
-| `ansible: command not found`, aber `pipx` meldet *already seems to be installed* | `~/.local/bin` fehlt im `PATH`: `pipx ensurepath`, dann `exec bash` (Schritt 9). Nicht `apt install ansible-core`. |
+| `ansible: command not found`, aber `pipx` meldet *already seems to be installed* | `~/.local/bin` fehlt im `PATH`: `pipx ensurepath`, dann `exec bash` (*Werkzeuge in WSL*). Nicht `apt install ansible-core`. |
 | `No inventory was parsed, only implicit localhost is available` | Kein Inventory angegeben: `-i ansible/inventory/hosts.yml` oder `ANSIBLE_INVENTORY` setzen (Schritt 9). Fehlt die Datei, mit `terraform apply` neu erzeugen. |
 | `ssh: connect to host … No route to host`, VM läuft | Netzwerkkarte vom Switch getrennt (siehe *Eigenheiten des Hyper-V-Providers*). Prüfen: `Get-VMNetworkAdapter -VMName cp-1`; wieder verbinden: `Connect-VMNetworkAdapter -VMName cp-1 -Name lab -SwitchName k8s-lab` |
 | `ping` aus WSL: `Destination Host Unreachable` | VM aus (`Get-VM cp-1` in PowerShell, ggf. `Start-VM cp-1`) oder Netzwerkkarte getrennt (Zeile darüber). |
@@ -454,12 +601,13 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [x] cloud-init Seed-ISO und erste VM (Gen2, Differencing-Disk), öffentlicher CA-Schlüssel per cloud-init
 - [x] VMs per `for_each` aus `local.nodes`
 - [x] `wait_for_ips = false` an der Netzwerkkarte
-- [ ] Bestätigen, dass `terraform plan` nach `apply` dauerhaft No changes zeigt (Provider-Umgehungen)
+- [x] `terraform plan` nach `apply` zeigt No changes (Provider-Umgehungen greifen)
 - [ ] Konsolen-Passwort wieder entfernen, sobald der Zertifikats-Zugang sich bewährt hat
 - [ ] Ablageort des Basis-Images außerhalb des Repos
 - [ ] Host-Zertifikate (VMs weisen sich per CA aus, kein Fingerprint-Wechsel nach Neuaufbau)
 - [x] Ansible: Grundgerüst, Inventory aus Terraform
 - [x] Ansible: Basis-Konfiguration (`prepare.yml`, Rolle `common`), idempotent
-- [ ] Ansible: containerd, Kubernetes-Pakete, `kubeadm init`
+- [x] Ansible: containerd, Kubernetes-Pakete (`kubernetes.yml`)
+- [ ] Ansible: `kubeadm init` auf der Control Plane, kubeconfig nach WSL (`control-plane.yml`)
 - [ ] Helm: Cilium als CNI, danach Argo CD
 - [ ] RHEL-Image (Developer Subscription) als zweite Distribution
