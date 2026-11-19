@@ -1,0 +1,49 @@
+# Einrichtungsskript: vhosts, Benutzer der Dienste, Rechte. Läuft bei jedem Container-Start
+# im Hintergrund (command in deployment.yaml), weil der Broker keine Persistenz hat.
+# Manuell erneut ausführen: kubectl -n rabbitmq exec deploy/rabbitmq -- bash /opt/lab/setup.sh
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rabbitmq.fullname" . }}-setup
+  labels:
+    {{- include "rabbitmq.labels" . | nindent 4 }}
+data:
+  setup.sh: |
+    #!/usr/bin/env bash
+    set -eu
+    log() { echo "[lab-setup] $*"; }
+
+    # Erst wenn der Broker sein Erlang-Cookie angelegt hat, rabbitmqctl aufrufen
+    for attempt in $(seq 1 60); do
+      [ -s "$HOME/.erlang.cookie" ] && break
+      sleep 2
+    done
+
+    # Auf den Broker warten. await_startup scheitert sofort, solange der Erlang-Knoten
+    # noch nicht erreichbar ist - deshalb wiederholen.
+    for attempt in $(seq 1 60); do
+      if rabbitmqctl -q await_startup >/dev/null 2>&1; then break; fi
+      if [ "$attempt" -eq 60 ]; then log "FEHLER: RabbitMQ nach 300 s nicht bereit"; exit 1; fi
+      sleep 5
+    done
+    log "Broker bereit"
+
+    for vh in $LAB_VHOSTS; do
+      rabbitmqctl -q add_vhost "$vh" 2>/dev/null || true
+      rabbitmqctl -q set_permissions -p "$vh" "$RABBITMQ_DEFAULT_USER" ".*" ".*" ".*"
+      log "vhost $vh, Administrator $RABBITMQ_DEFAULT_USER berechtigt"
+    done
+
+    i=0
+    for c in $LAB_CLIENTS; do
+      name="${c%%:*}"; vh="${c#*:}"; pwvar="CLIENT_PW_$i"; pw="${!pwvar}"
+      if rabbitmqctl -q list_users | awk '{print $1}' | grep -qx "$name"; then
+        rabbitmqctl -q change_password "$name" "$pw"
+      else
+        rabbitmqctl -q add_user "$name" "$pw"
+      fi
+      rabbitmqctl -q set_permissions -p "$vh" "$name" ".*" ".*" ".*"
+      log "Benutzer $name -> vhost $vh"
+      i=$((i+1))
+    done
+    log "fertig"

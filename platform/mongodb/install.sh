@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # platform/mongodb/install.sh
 # Installiert oder aktualisiert MongoDB (eigenes Helm-Chart). Setzt die StorageClass "standard"
-# voraus (platform/nfs-csi). Standard-Namespace ist der der Anwendungen ("demo"),
-# weil diese das Secret mit dem Connection-String nur im eigenen Namespace lesen können.
+# voraus (platform/nfs-csi). MongoDB läuft im eigenen Namespace "mongodb"; die Zugangsdaten der
+# Dienste legt das Chart als Secrets in deren Namespaces an (values.yaml, clients).
 #
 #   bash platform/mongodb/install.sh
 set -euo pipefail
 
 RELEASE="${RELEASE:-mongodb}"
-NAMESPACE="${NAMESPACE:-demo}"
+NAMESPACE="${NAMESPACE:-mongodb}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 for cmd in kubectl helm; do
@@ -22,6 +22,15 @@ if ! kubectl get storageclass standard >/dev/null 2>&1; then
 fi
 
 helm lint "$HERE/chart"
+
+# Namespaces der Dienste müssen existieren, damit Helm dort die Client-Secrets anlegen kann.
+# Sie gehören den Produkten, nicht diesem Release - deshalb hier per kubectl statt im Chart.
+for ns in $(helm template "$RELEASE" "$HERE/chart" -n "$NAMESPACE" "$@" --show-only templates/client-secrets.yaml \
+            | awk '/^  namespace:/ {print $2}' | sort -u); do
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  echo "Namespace vorhanden: $ns"
+done
+
 # --wait: Helm wartet, bis der Pod bereit ist, bevor der Init-Job (Hook) läuft
 helm upgrade --install "$RELEASE" "$HERE/chart" \
   --namespace "$NAMESPACE" --create-namespace \
@@ -29,3 +38,4 @@ helm upgrade --install "$RELEASE" "$HERE/chart" \
   "$@"
 
 kubectl -n "$NAMESPACE" get statefulset,pod,pvc,svc -l app.kubernetes.io/instance="$RELEASE"
+kubectl get secret -A -l app.kubernetes.io/component=client-credentials,app.kubernetes.io/instance="$RELEASE"

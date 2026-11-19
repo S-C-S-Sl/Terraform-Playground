@@ -1,4 +1,5 @@
-{{- if .Values.management.httpRoute.enabled }}
+{{- /* Nur anlegen, wenn die Gateway-API-CRDs installiert sind (Envoy Gateway, README Schritt 17) */ -}}
+{{- if and .Values.management.httpRoute.enabled (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1/HTTPRoute") }}
 # Management-UI über das Gateway (nur im Lab veröffentlichen)
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

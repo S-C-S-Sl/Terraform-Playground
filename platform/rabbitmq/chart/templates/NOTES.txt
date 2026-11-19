@@ -1,11 +1,23 @@
 RabbitMQ "{{ include "rabbitmq.fullname" . }}" im Namespace {{ .Release.Namespace }} installiert ({{ .Values.image.repository }}:{{ .Values.image.tag }}).
 
-AMQP im Cluster:  {{ include "rabbitmq.fullname" . }}.{{ .Release.Namespace }}:5672
-{{- if .Values.management.httpRoute.enabled }}
+AMQP im Cluster:  {{ include "rabbitmq.host" . }}:5672
+{{- if and .Values.management.httpRoute.enabled (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1/HTTPRoute") }}
 Management-UI:    http://{{ .Values.management.httpRoute.hostname }}/
                   Hosts-Datei (Windows): 192.168.250.200  {{ .Values.management.httpRoute.hostname }}
+{{- else }}
+Management-UI:    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "rabbitmq.fullname" . }} 15672:15672
+                  dann http://localhost:15672/
+{{- if .Values.management.httpRoute.enabled }}
+                  (HTTPRoute übersprungen: Gateway-API-CRDs fehlen, siehe README Schritt 17)
+{{- end }}
 {{- end }}
 
-Zugangsdaten (Secret "{{ include "rabbitmq.fullname" . }}", Schlüssel username/password/host):
+vhosts: {{ join ", " .Values.vhosts }}
+Dienste (Benutzer mit vollen Rechten auf ihrem vhost, Secret im Namespace des Dienstes):
+{{- range .Values.clients }}
+  {{ .name }} -> vhost {{ .vhost }}, Secret {{ .namespace }}/{{ include "rabbitmq.fullname" $ }}-{{ .name }}
+{{- end }}
+
+Administrator für die Management-UI (Secret "{{ include "rabbitmq.fullname" . }}" im Namespace {{ .Release.Namespace }}):
   kubectl -n {{ .Release.Namespace }} get secret {{ include "rabbitmq.fullname" . }} -o jsonpath='{.data.username}' | base64 -d; echo
   kubectl -n {{ .Release.Namespace }} get secret {{ include "rabbitmq.fullname" . }} -o jsonpath='{.data.password}' | base64 -d; echo

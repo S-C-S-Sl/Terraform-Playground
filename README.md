@@ -84,7 +84,7 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 | `ansible/` | WSL | Konfiguration der VMs |
 | `platform/` | WSL (Helm) | Inhalte des Clusters, beginnend mit dem CNI |
 | `tools/` | WSL, Bash | Werkzeuge der Arbeitsumgebung installieren |
-| `examples/` | WSL (kubectl) | Beispielanwendungen zum Testen |
+| `examples/` | WSL (kubectl) | Beispielanwendungen zum Testen (`examples/demo` im Namespace `demo`) |
 | `apps/` | .NET SDK, Docker | eigene Anwendungen; Beschreibung jeweils in der README des Ordners |
 | `terraform/` | Windows, Admin-PowerShell | Netz und VMs |
 
@@ -852,73 +852,101 @@ Hosts-Datei – aber keine neue IP und keine neue Route. WSL übernimmt die Host
 
 Aufräumen: `kubectl delete -f examples/demo/demo.yaml`.
 
+### Namespaces: Produkte und gemeinsame Infrastruktur
+
+| Namespace | Inhalt | Wem gehört er |
+|---|---|---|
+| `shop` | Dienste des Produkts (catalog-api, orders-api, Frontend) | dem Produkt |
+| `rabbitmq` | RabbitMQ, ein vhost pro Produkt (`shop`), ein Benutzer pro Dienst | der Plattform, von mehreren Produkten nutzbar |
+| `mongodb` | MongoDB, eine Datenbank und ein Benutzer pro Dienst | der Plattform, von mehreren Produkten nutzbar |
+| `gateway`, `envoy-gateway-system`, `kube-system` | Gateway, Controller, Cilium, NFS-CSI | der Plattform |
+
+**Modell "geteilte Plattform"**: Ein MongoDB und ein RabbitMQ dienen allen Produkten; getrennt wird logisch –
+MongoDB über eigene Datenbanken und Benutzer, RabbitMQ über eigene vhosts und Benutzer. Jeder Dienst besitzt
+seine Daten (`catalog-api` darf nur `catalog` lesen/schreiben), ohne eigene Server-Instanz. Die Alternative –
+eigene Instanzen je Produkt – bringt mehr Unabhängigkeit (Versionen, Wartung, Last) für mehr Betriebsaufwand.
+
+**Zugangsdaten über Namespace-Grenzen**: Pods lesen Secrets nur im eigenen Namespace. Deshalb legt jedes
+Infrastruktur-Chart die Zugangsdaten eines Dienstes **im Namespace des Dienstes** an – gesteuert über die Liste
+`clients` in seiner `values.yaml`. Der Administrator entscheidet dort, wer Zugang bekommt; der Dienst findet sein
+Secret im eigenen Namespace vor:
+
+| Infrastruktur | Eintrag in `values.yaml` | Secret im Namespace des Dienstes |
+|---|---|---|
+| RabbitMQ | `{ name: catalog-api, namespace: shop, vhost: shop }` | `rabbitmq-catalog-api`: `host`, `port`, `vhost`, `username`, `password` |
+| MongoDB | `{ name: catalog-api, namespace: shop, database: catalog }` | `mongodb-catalog-api`: `username`, `password`, `database`, `connection-string` |
+
+Die Passwörter entstehen zufällig beim ersten Install, liegen im Verwaltungs-Secret im Namespace der
+Infrastruktur und werden bei jedem Update von dort übernommen. Ein zweites Produkt ist ein weiterer Eintrag in
+`clients` (und bei RabbitMQ in `vhosts`). Die Produkt-Namespaces legt das jeweilige `install.sh` an, falls sie
+fehlen – nicht das Chart, damit ein `helm uninstall` sie nicht mitlöscht.
+
+**Umzug vom bisherigen Namespace `demo`** (falls RabbitMQ/MongoDB dort installiert waren):
+
+```bash
+helm -n demo uninstall rabbitmq mongodb 2>/dev/null; kubectl delete namespace demo
+bash platform/rabbitmq/install.sh
+bash platform/mongodb/install.sh
+```
+
 ### 18. RabbitMQ (WSL)
 
-Message-Broker für die geplante Demo-Anwendung (Angular, zwei ASP.NET-10-APIs): Die APIs sollen sich nicht
-direkt aufrufen, sondern nur über RabbitMQ austauschen.
-
+Message-Broker für die Dienste: Sie rufen sich nicht direkt auf, sondern tauschen sich nur über RabbitMQ aus.
 Bereitgestellt über ein **eigenes Helm-Chart** (`platform/rabbitmq/chart`) mit dem Docker Official Image
-`rabbitmq:4.4-management` – ohne Operator und ohne Fremd-Chart:
+`rabbitmq:4.4-management`, im Namespace `rabbitmq`:
 
 | Datei | Inhalt |
 |---|---|
-| `values.yaml` | Image, Benutzername, optional Passwort, Management-UI, Ressourcen |
-| `templates/secret.yaml` | Zugangsdaten (`username`, `password`, `host`) für Broker und Anwendungen |
-| `templates/deployment.yaml` | ein Broker, `Recreate` (nie zwei gleichzeitig), Probes |
+| `values.yaml` | Image, Administrator, `vhosts`, `clients` (Dienste), Management-UI, Ressourcen |
+| `templates/secret.yaml` | Verwaltungs-Secret: Administrator und Passwörter der Dienste |
+| `templates/client-secrets.yaml` | je Dienst ein Secret `rabbitmq-<dienst>` im Namespace des Dienstes |
+| `templates/deployment.yaml` | ein Broker, `Recreate`, Probes; **postStart** legt vhosts, Benutzer und Rechte an |
 | `templates/service.yaml` | AMQP (5672) und Management-UI (15672), nur im Cluster |
 | `templates/httproute.yaml` | Management-UI über das Gateway (`rabbitmq.k8s-lab`), nur wenn die Gateway-API-CRDs vorhanden sind |
 
 | Bewusste Vereinfachung | Folge |
 |---|---|
 | ein einzelner Broker als Deployment, kein Operator | kein Clustering, Upgrades per neuem Image-Tag |
-| keine Persistenz (der Cluster hat noch keine StorageClass) | Nachrichten, Queues und Benutzer der UI gehen bei einem Neustart verloren |
+| keine Persistenz | Nachrichten und Queues gehen bei einem Neustart verloren; vhosts und Benutzer legt `postStart` bei jedem Start neu an |
 
-**Passwort:** Ist `auth.password` leer, erzeugt das Chart beim ersten Install ein zufälliges Passwort und
-übernimmt es bei jedem Update aus dem bestehenden Secret (`lookup`). Es steht nie im Repo.
+**Benutzer**: `admin` (Verwaltung, Management-UI) aus dem Image (`RABBITMQ_DEFAULT_USER`). Die Dienste bekommen je einen
+eigenen Benutzer mit vollen Rechten auf **ihrem** vhost (`clients` in `values.yaml`), angelegt per `rabbitmqctl`
+im `postStart`-Hook. Fehlt ein Recht, lehnt RabbitMQ die Verbindung des Dienstes zu einem fremden vhost ab.
 
-**Namespace:** Standard ist `demo`, der Namespace der späteren Anwendungen: Pods können Secrets nur im
-eigenen Namespace lesen. Eine Anwendung bekommt die Zugangsdaten so als Umgebungsvariablen
-(in .NET z. B. `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password`):
-
-```yaml
-env:
-  - name: RabbitMQ__Password
-    valueFrom:
-      secretKeyRef:
-        name: rabbitmq
-        key: password
-```
-
-**Unabhängig vom Gateway:** RabbitMQ braucht kein Gateway. Anwendungen verbinden sich innerhalb des
-Clusters über den ClusterIP-Service `rabbitmq` (`rabbitmq.demo:5672`). Das Gateway ist nur Komfort für die
-Management-UI: Ist Envoy Gateway installiert (Schritt 17), legt das Chart die Route `rabbitmq.k8s-lab` an;
-fehlen die Gateway-API-CRDs, überspringt es sie und installiert trotzdem. Empfohlene Reihenfolge daher:
-Schritt 17, dann dieser Schritt. Envoy Gateway nachträglich installiert? `install.sh` erneut ausführen.
+**Unabhängig vom Gateway:** Dienste verbinden sich über `rabbitmq.rabbitmq.svc.cluster.local:5672`. Das Gateway ist
+nur Komfort für die Management-UI: Ist Envoy Gateway installiert (Schritt 17), legt das Chart die Route
+`rabbitmq.k8s-lab` an; fehlen die Gateway-API-CRDs, überspringt es sie. Envoy Gateway nachträglich installiert?
+`install.sh` erneut ausführen.
 
 **Installieren:**
 
 ```bash
-kubectl delete -f examples/demo/demo.yaml --ignore-not-found   # nginx-Beispiel nutzt ebenfalls Namespace "demo"
 bash platform/rabbitmq/install.sh
-kubectl -n demo get httproute                   # rabbitmq-management (nur mit Gateway)
+kubectl -n rabbitmq get pods,svc,httproute
+kubectl -n shop get secret rabbitmq-catalog-api rabbitmq-orders-api
+kubectl -n rabbitmq exec deploy/rabbitmq -- rabbitmqctl list_permissions -p shop
 ```
 
-**Management-UI über das Gateway:** Hosts-Datei unter Windows ergänzen und `http://rabbitmq.k8s-lab` öffnen:
+**Management-UI** über das Gateway: Hosts-Datei ergänzen (`192.168.250.200  rabbitmq.k8s-lab`), `http://rabbitmq.k8s-lab`
+öffnen, mit dem Administrator anmelden. Ohne Gateway: `kubectl -n rabbitmq port-forward svc/rabbitmq 15672:15672`,
+dann `http://localhost:15672`. Route abschalten: `--set management.httpRoute.enabled=false`.
 
+**Dienst anbinden** (Ausschnitt eines Deployments im Namespace `shop`):
+
+```yaml
+env:
+  - name: RabbitMQ__Host
+    valueFrom: { secretKeyRef: { name: rabbitmq-catalog-api, key: host } }
+  - name: RabbitMQ__VirtualHost
+    valueFrom: { secretKeyRef: { name: rabbitmq-catalog-api, key: vhost } }
+  - name: RabbitMQ__Username
+    valueFrom: { secretKeyRef: { name: rabbitmq-catalog-api, key: username } }
+  - name: RabbitMQ__Password
+    valueFrom: { secretKeyRef: { name: rabbitmq-catalog-api, key: password } }
 ```
-192.168.250.200  rabbitmq.k8s-lab
-```
 
-**Ohne Gateway** per Port-Forwarding, dann `http://localhost:15672`:
-
-```bash
-kubectl -n demo port-forward svc/rabbitmq 15672:15672
-```
-
-Route abschalten: `bash platform/rabbitmq/install.sh --set management.httpRoute.enabled=false`.
-
-Zugangsdaten anzeigen: `helm -n demo get notes rabbitmq` nennt die Befehle.
-Chart ohne Cluster prüfen: `helm lint platform/rabbitmq/chart`, `helm template rabbitmq platform/rabbitmq/chart -n demo`.
+Zugangsdaten anzeigen: `helm -n rabbitmq get notes rabbitmq`. Chart ohne Cluster prüfen:
+`helm lint platform/rabbitmq/chart`, `helm template rabbitmq platform/rabbitmq/chart -n rabbitmq`.
 
 ### 19. Speicher (NFS) und MongoDB (PowerShell + WSL)
 
@@ -1013,41 +1041,43 @@ Volume aus der StorageClass `standard` (`persistence.storageClass`):
 |---|---|
 | `templates/statefulset.yaml` | ein Mitglied, Volume per `volumeClaimTemplates`, Keyfile, WiredTiger-Cache passend zum Limit |
 | `templates/services.yaml` | Headless Service (fester DNS-Name des Mitglieds) und normaler Service |
-| `templates/secret.yaml` | Root- und Anwendungs-Zugangsdaten, Keyfile, fertiger `connection-string` |
-| `templates/init-job.yaml` | Helm-Hook nach jedem Install/Upgrade: `rs.initiate` (falls nötig), Anwendungsbenutzer anlegen/aktualisieren |
+| `templates/secret.yaml` | Verwaltungs-Secret im Namespace `mongodb`: Root, Keyfile, Passwörter der Dienste |
+| `templates/client-secrets.yaml` | je Dienst ein Secret `mongodb-<dienst>` im Namespace des Dienstes, mit fertigem `connection-string` |
+| `templates/init-job.yaml` | Helm-Hook nach jedem Install/Upgrade: `rs.initiate` (falls nötig), Benutzer der Dienste anlegen/aktualisieren |
 
 | Entscheidung | Warum |
 |---|---|
 | **Replica Set mit einem Mitglied** (`rs0`) | verhält sich für Anwendungen wie ein produktives Replica Set (Transaktionen, Change Streams); später auf drei Mitglieder erweiterbar |
 | **Keyfile** | Pflicht für ein Replica Set mit Authentifizierung, auch bei nur einem Mitglied |
-| **Root-Benutzer nur zur Verwaltung**, Anwendungen nutzen `app` mit `readWrite` auf `catalog` und `orders` | geringste nötige Rechte; Datenbanken in `auth.appDatabases` |
+| **Root-Benutzer nur zur Verwaltung**, je Dienst ein Benutzer mit `readWrite` auf seiner Datenbank (`clients`) | geringste nötige Rechte; jeder Dienst besitzt seine Daten |
 | Passwörter und Keyfile zufällig erzeugt, bei Updates aus dem Secret übernommen | nichts davon im Repo |
 
 ```bash
 bash platform/mongodb/install.sh
-kubectl -n demo get statefulset,pod,pvc -l app.kubernetes.io/instance=mongodb
+kubectl -n mongodb get statefulset,pod,pvc -l app.kubernetes.io/instance=mongodb
+kubectl -n shop get secret mongodb-catalog-api mongodb-orders-api
 ```
 
 `install.sh` prüft vorher, ob die StorageClass `standard` existiert, und wartet (`--wait`), bis MongoDB bereit
-ist, bevor der Init-Job läuft. Ergebnis des Jobs: `kubectl -n demo logs job/mongodb-init` (er wird nach
+ist, bevor der Init-Job läuft. Ergebnis des Jobs: `kubectl -n mongodb logs job/mongodb-init` (er wird nach
 Erfolg gelöscht; bei Fehlern bleibt er stehen).
 
 **Prüfen** (in der VM bzw. im Pod):
 
 ```bash
-kubectl -n demo exec mongodb-0 -- bash -c \
+kubectl -n mongodb exec mongodb-0 -- bash -c \
   'mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --quiet --eval "rs.status().members.map(m => m.name + \" \" + m.stateStr)"'
-# [ 'mongodb-0.mongodb-headless.demo.svc.cluster.local:27017 PRIMARY' ]
+# [ 'mongodb-0.mongodb-headless.mongodb.svc.cluster.local:27017 PRIMARY' ]
 ```
 
-**Anwendungen** bekommen den Connection-String aus dem Secret:
+**Anwendungen** bekommen den Connection-String aus dem Secret in ihrem Namespace:
 
 ```yaml
 env:
   - name: ConnectionStrings__MongoDb
     valueFrom:
       secretKeyRef:
-        name: mongodb
+        name: mongodb-catalog-api
         key: connection-string
 ```
 
@@ -1055,15 +1085,15 @@ env:
 weil der Name des Mitglieds nur im Cluster auflösbar ist:
 
 ```bash
-kubectl -n demo port-forward svc/mongodb 27017:27017
-# mongodb://app:<app-password>@localhost:27017/?directConnection=true&authSource=admin
-kubectl -n demo get secret mongodb -o jsonpath='{.data.app-password}' | base64 -d; echo
+kubectl -n mongodb port-forward svc/mongodb 27017:27017
+# mongodb://catalog-api:<passwort>@localhost:27017/catalog?directConnection=true&authSource=admin
+kubectl -n shop get secret mongodb-catalog-api -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
 **Daten bleiben erhalten** – auch über `helm uninstall` hinweg (Helm löscht die PVCs eines StatefulSets nicht)
 und nach Löschen des PVC (Verzeichnis bleibt auf nfs-1, `onDelete: retain`). Ein neues PVC bekommt allerdings ein
 **neues** Verzeichnis; alte Daten bindet man nur gezielt wieder ein. Bleibt der Pod `Pending`, zeigt
-`kubectl -n demo describe pvc data-mongodb-0` die Ursache (z. B. NFS-Server nicht erreichbar).
+`kubectl -n mongodb describe pvc data-mongodb-0` die Ursache (z. B. NFS-Server nicht erreichbar).
 
 ## Speicher: Optionen und Entscheidung
 
@@ -1318,6 +1348,7 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [ ] Hubble UI über das Gateway veröffentlichen (`hubble.k8s-lab`) statt per port-forward
 - [ ] Terraform-Prüfung: keine VM-IP im LoadBalancer-Pool
 - [x] RabbitMQ (eigenes Chart, Schritt 18), Management-UI unter `rabbitmq.k8s-lab`
+- [ ] Namespaces `shop`, `rabbitmq`, `mongodb`; Benutzer und Secrets pro Dienst (siehe *Namespaces*)
 - [ ] RabbitMQ als Cluster mit 3 Knoten: Volumes aus `standard`, `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
 - [ ] Demo-Anwendung: Quellcode (Angular, zwei ASP.NET-10-APIs), Dockerfiles, Images nach ghcr.io, Deployment
 - [ ] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)

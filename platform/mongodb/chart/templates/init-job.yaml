@@ -1,5 +1,5 @@
-# Läuft nach jedem Install/Upgrade: initiiert das Replica Set (falls nötig) und legt den
-# Anwendungsbenutzer an bzw. aktualisiert Passwort und Rechte. Idempotent.
+# Läuft nach jedem Install/Upgrade: initiiert das Replica Set (falls nötig) und legt die Benutzer
+# der Dienste an bzw. aktualisiert Passwort und Rechte (readWrite auf die eigene Datenbank). Idempotent.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -31,14 +31,25 @@ spec:
               value: {{ .Values.replicaSetName | quote }}
             - name: RS_HOST
               value: {{ include "mongodb.memberHost" . | quote }}
-            - name: APP_DATABASES
-              value: {{ join "," .Values.auth.appDatabases | quote }}
-            {{- range $env, $key := dict "ROOT_USER" "root-username" "ROOT_PASSWORD" "root-password" "APP_USER" "app-username" "APP_PASSWORD" "app-password" }}
-            - name: {{ $env }}
+            # Name und Datenbank je Dienst; die Passwörter kommen einzeln aus dem Secret (CLIENT_PW_<n>)
+            - name: CLIENTS
+              value: {{ include "mongodb.clientsJson" . | quote }}
+            - name: ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mongodb.fullname" . }}
+                  key: root-username
+            - name: ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mongodb.fullname" . }}
+                  key: root-password
+            {{- range $i, $c := .Values.clients }}
+            - name: {{ printf "CLIENT_PW_%d" $i }}
               valueFrom:
                 secretKeyRef:
                   name: {{ include "mongodb.fullname" $ }}
-                  key: {{ $key }}
+                  key: {{ printf "client-%s-password" $c.name }}
             {{- end }}
           command:
             - bash
@@ -63,9 +74,10 @@ spec:
               if (!db.hello().isWritablePrimary) throw new Error("Kein Primary nach 60 Sekunden");
 
               const admin = db.getSiblingDB("admin");
-              const user = process.env.APP_USER, pwd = process.env.APP_PASSWORD;
-              const roles = process.env.APP_DATABASES.split(",").map(d => d.trim()).filter(d => d)
-                .map(d => ({ role: "readWrite", db: d }));
-              if (admin.getUser(user)) { admin.updateUser(user, { pwd: pwd, roles: roles }); print("Benutzer aktualisiert: " + user); }
-              else { admin.createUser({ user: user, pwd: pwd, roles: roles }); print("Benutzer angelegt: " + user); }
+              JSON.parse(process.env.CLIENTS).forEach((c, i) => {
+                const pwd = process.env["CLIENT_PW_" + i];
+                const roles = [{ role: "readWrite", db: c.database }];
+                if (admin.getUser(c.name)) { admin.updateUser(c.name, { pwd: pwd, roles: roles }); print("Benutzer aktualisiert: " + c.name + " -> " + c.database); }
+                else { admin.createUser({ user: c.name, pwd: pwd, roles: roles }); print("Benutzer angelegt: " + c.name + " -> " + c.database); }
+              });
               EOJS

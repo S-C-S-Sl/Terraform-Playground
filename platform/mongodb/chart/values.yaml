@@ -11,12 +11,18 @@ auth:
   # Administrator, nur für Verwaltung und den Init-Job
   rootUsername: root
   rootPassword: ""          # leer = zufällig erzeugen und bei Updates beibehalten
-  # Benutzer für die Anwendungen, readWrite auf den genannten Datenbanken
-  appUsername: app
-  appPassword: ""           # leer = zufällig erzeugen und bei Updates beibehalten
-  appDatabases:
-    - catalog
-    - orders
+
+# Zugriffe der Anwendungen: ein Benutzer pro Dienst mit readWrite auf genau seiner Datenbank.
+# Das Chart legt dafür im Namespace des Dienstes ein Secret "mongodb-<name>" an
+# (username, password, database, connection-string). Den Namespace legt install.sh an, falls er fehlt.
+# Entfernte Einträge löschen weder Benutzer noch Secret automatisch.
+clients:
+  - name: catalog-api
+    namespace: shop
+    database: catalog
+  - name: orders-api
+    namespace: shop
+    database: orders
 
 persistence:
   size: 5Gi

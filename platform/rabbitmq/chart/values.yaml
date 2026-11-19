@@ -3,12 +3,32 @@ image:
   repository: rabbitmq
   tag: "4.4-management"
 
+# Administrator (Management-UI, Verwaltung); nicht für Anwendungen
 auth:
-  username: app
+  username: admin
   # Leer = beim ersten Install zufällig erzeugen und bei Updates beibehalten
   password: ""
 
-# Management-UI über das Gateway veröffentlichen (Hosts-Datei ergänzen)
+# Virtuelle Hosts: logische Trennung der Produkte (eigene Exchanges, Queues, Rechte)
+vhosts:
+  - shop
+
+# Zugriffe der Anwendungen: ein Benutzer pro Dienst mit vollen Rechten auf genau seinem vhost.
+# Das Chart legt dafür im Namespace des Dienstes ein Secret "rabbitmq-<name>" an
+# (host, port, vhost, username, password). Den Namespace legt install.sh an, falls er fehlt.
+# Entfernte Einträge löschen weder Benutzer noch Secret automatisch.
+clients:
+  - name: catalog-api
+    namespace: shop
+    vhost: shop
+  - name: orders-api
+    namespace: shop
+    vhost: shop
+
+# Management-UI über das Gateway veröffentlichen (Komfort, nicht nötig für den Betrieb).
+# RabbitMQ selbst braucht kein Gateway: Anwendungen verbinden sich im Cluster über den
+# Service "rabbitmq" (Port 5672). Die Route wird nur angelegt, wenn die Gateway-API-CRDs
+# installiert sind (Envoy Gateway, README Schritt 17); sonst ist die UI per port-forward erreichbar.
 management:
   httpRoute:
     enabled: true

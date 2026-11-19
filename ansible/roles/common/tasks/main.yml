@@ -1,4 +1,3 @@
-
 # --- Pakete -------------------------------------------------------------------
 - name: Paketquellen aktualisieren und System aktualisieren
   ansible.builtin.apt:

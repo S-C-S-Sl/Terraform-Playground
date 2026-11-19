@@ -26,3 +26,28 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- define "mongodb.image" -}}
 {{ .Values.image.repository }}:{{ .Values.image.tag }}
 {{- end -}}
+
+{{/* Passwort eines Dienstes: aus values, sonst aus dem Verwaltungs-Secret, sonst neu.
+     Achtung: randAlphaNum liefert bei jedem Aufruf einen neuen Wert. Beim allerersten Install
+     erzeugt der Helper deshalb in secret.yaml und client-secrets.yaml verschiedene Werte -
+     verhindert durch das Zwischenspeichern in .Values (siehe unten). */}}
+{{- define "mongodb.clientPassword" -}}
+{{- $key := printf "client-%s-password" .client.name -}}
+{{- if .client.password -}}
+{{- .client.password -}}
+{{- else if (get .old $key) -}}
+{{- get .old $key | b64dec -}}
+{{- else -}}
+{{- if not (hasKey .client "_generated") -}}
+{{- $_ := set .client "_generated" (randAlphaNum 24) -}}
+{{- end -}}
+{{- .client._generated -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Dienste als JSON für den Init-Job (ohne Passwörter) */}}
+{{- define "mongodb.clientsJson" -}}
+{{- $list := list -}}
+{{- range .Values.clients }}{{ $list = append $list (dict "name" .name "database" .database) }}{{ end -}}
+{{- toJson $list -}}
+{{- end -}}

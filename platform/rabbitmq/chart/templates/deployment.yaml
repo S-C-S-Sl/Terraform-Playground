@@ -20,10 +20,16 @@ spec:
       annotations:
         # Neustart, wenn sich die Zugangsdaten ändern
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/setup: {{ include (print $.Template.BasePath "/configmap-setup.yaml") . | sha256sum }}
     spec:
       containers:
         - name: rabbitmq
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # Einrichtungsskript (vhosts, Benutzer, Rechte) im Hintergrund starten, dann wie im Image
+          # vorgesehen den Broker. Das Skript erbt stdout des Containers (Zeilen "[lab-setup]" im Log).
+          # Es läuft als Benutzer "rabbitmq" (gosu): rabbitmqctl legt das Erlang-Cookie an, falls es
+          # noch fehlt - als root angelegt, könnte der Broker es nicht lesen und startet nicht (eacces).
+          command: ["bash", "-c", "gosu rabbitmq bash /opt/lab/setup.sh & exec docker-entrypoint.sh rabbitmq-server"]
           ports:
             - name: amqp
               containerPort: 5672
@@ -40,6 +46,18 @@ spec:
                 secretKeyRef:
                   name: {{ include "rabbitmq.fullname" . }}
                   key: password
+            # vhosts und Benutzer der Dienste (für setup.sh, siehe command)
+            - name: LAB_VHOSTS
+              value: {{ join " " .Values.vhosts | quote }}
+            - name: LAB_CLIENTS
+              value: {{ include "rabbitmq.clientsList" . | quote }}
+            {{- range $i, $c := .Values.clients }}
+            - name: {{ printf "CLIENT_PW_%d" $i }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rabbitmq.fullname" $ }}
+                  key: {{ printf "client-%s-password" $c.name }}
+            {{- end }}
           readinessProbe:
             tcpSocket:
               port: amqp
@@ -53,3 +71,11 @@ spec:
             timeoutSeconds: 15
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: setup
+              mountPath: /opt/lab
+              readOnly: true
+      volumes:
+        - name: setup
+          configMap:
+            name: {{ include "rabbitmq.fullname" . }}-setup
