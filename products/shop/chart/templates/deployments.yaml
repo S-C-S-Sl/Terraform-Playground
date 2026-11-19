@@ -1,0 +1,35 @@
+{{- range $name, $svc := .Values.services }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "shop.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels:
+      {{- include "shop.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shop.labels" $ctx | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ $name }}
+          image: "{{ $svc.image }}:{{ $svc.tag }}"
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+          readinessProbe:
+            {{- include "shop.probe" $ctx | nindent 12 }}
+            periodSeconds: 5
+          livenessProbe:
+            {{- include "shop.probe" $ctx | nindent 12 }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+{{- end }}

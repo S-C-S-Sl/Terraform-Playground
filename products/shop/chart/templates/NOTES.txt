@@ -1,0 +1,7 @@
+Produkt "{{ .Release.Name }}" im Namespace {{ .Release.Namespace }}.
+Hosts-Datei (Windows): 192.168.250.200  {{ .Values.hostname }}
+
+Dienste:
+{{- range $name, $svc := .Values.services }}
+  {{ $name }}  {{ $svc.image }}:{{ $svc.tag }}  ->  http://{{ $.Values.hostname }}{{ $svc.pathPrefix }}/
+{{- end }}

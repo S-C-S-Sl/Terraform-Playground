@@ -1,0 +1,28 @@
+# Produkt "shop": erreichbar unter http://<hostname>/<pathPrefix des Dienstes>/...
+# Hosts-Datei (Windows): 192.168.250.200  shop.k8s-lab
+hostname: shop.k8s-lab
+
+# Gateway aus platform/gateway/gateway.yaml
+gateway:
+  name: lab
+  namespace: gateway
+
+# Dienste des Produkts. Für jeden Eintrag entstehen Deployment, Service und eine Regel in der
+# HTTPRoute. Das Gateway entfernt pathPrefix vor der Weiterleitung (/api/catalog/x -> /x).
+services:
+  catalogservice:
+    image: ghcr.io/sschabbach-mse/catalogservice
+    tag: "0.1.0-create-api.1"     # GitVersion-Version aus dem CI des Dienstes
+    replicas: 1
+    port: 8080                    # Kestrel im ASP.NET-Image
+    pathPrefix: /api/catalog
+    # Noch kein Health-Endpunkt im Dienst: Probes prüfen nur, ob der Port offen ist.
+    # Später: probe: { type: http, path: /healthz }
+    probe:
+      type: tcp
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi

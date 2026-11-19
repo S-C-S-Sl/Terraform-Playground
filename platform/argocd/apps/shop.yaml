@@ -1,0 +1,28 @@
+# Argo-CD-Application für das Produkt "shop": Argo CD hält den Namespace "shop" auf dem
+# Stand von products/shop/chart im Branch develop dieses Repos.
+#
+#   kubectl apply -f platform/argocd/apps/shop.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shop
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/sschabbach-mse/Terraform-Playground.git
+    targetRevision: develop
+    path: products/shop/chart
+    helm:
+      releaseName: shop        # bestimmt Namen und Labels (.Release.Name) wie bei helm install
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shop
+  syncPolicy:
+    # Änderungen im Git automatisch ausrollen; Handänderungen im Cluster zurücksetzen;
+    # aus dem Chart entfernte Ressourcen löschen
+    automated:
+      prune: true
+      selfHeal: true

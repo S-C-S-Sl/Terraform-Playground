@@ -5,8 +5,8 @@ Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
 > Status: Cluster mit drei Knoten (`cp-1`, `worker-1`, `worker-2`; Kubernetes 1.37, Cilium 1.20 mit Hubble),
-> Envoy Gateway unter `192.168.250.200`, RabbitMQ 4.4 und MongoDB 8.3 (auf NFS) laufen. Als Nächstes: Produkt `shop`
-> (Quellcode in eigenem Repo, Helm-Chart unter `products/shop`).
+> Envoy Gateway unter `192.168.250.200`, RabbitMQ 4.4 und MongoDB 8.3 (auf NFS) laufen. Als Nächstes: Argo CD und
+> Produkt `shop` (Quellcode in eigenem Repo, Helm-Chart unter `products/shop`), danach Test des Neuaufbaus.
 
 ## Struktur
 
@@ -36,6 +36,10 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   ├── rabbitmq/
 │   │   ├── chart/                # eigenes Helm-Chart: ein Broker, ohne Persistenz
 │   │   └── install.sh
+│   ├── argocd/                   # Argo CD (GitOps) + Applications unter apps/
+│   │   ├── values.yaml
+│   │   ├── install.sh
+│   │   └── apps/shop.yaml
 │   ├── nfs-csi/                  # NFS-CSI-Treiber + StorageClass "standard" (dynamisch)
 │   │   ├── values.yaml
 │   │   └── install.sh
@@ -44,7 +48,9 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │       └── install.sh
 ├── examples/
 │   └── demo/demo.yaml            # einfache nginx-Beispielanwendung (Test des Gateways)
-├── products/                     # Helm-Charts der Produkte (geplant), z. B. products/shop
+├── products/                     # Helm-Charts der Produkte
+│   └── shop/
+│       └── chart/                # Deployments, Services, HTTPRoute je Dienst (ausgerollt von Argo CD)
 
 ├── ansible/                      # Konfiguration der VMs (WSL)
 │   ├── prepare.yml               # Playbook: Basis-Konfiguration aller VMs
@@ -492,8 +498,8 @@ ansible-playbook -i ansible/inventory/hosts.yml ansible/prepare.yml             
 - **Zweiter echter Lauf**: muss im `PLAY RECAP` `changed=0` zeigen (Idempotenz). Ein `changed` deutet auf
   einen Task hin, der nicht sauber idempotent geschrieben ist.
 - Fakten werden über `ansible_facts['…']` gelesen, nicht über `ansible_…`-Variablen (ab ansible-core 2.24 entfernt). Die Collections `ansible.posix`
-  und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
-  `ansible-galaxy collection install -r ansible/requirements.yml`.
+und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
+`ansible-galaxy collection install -r ansible/requirements.yml`.
 
 ### 12. Container-Runtime und Kubernetes-Pakete (WSL)
 
@@ -1113,6 +1119,68 @@ und nach Löschen des PVC (Verzeichnis bleibt auf nfs-1, `onDelete: retain`). Ei
 **neues** Verzeichnis; alte Daten bindet man nur gezielt wieder ein. Bleibt der Pod `Pending`, zeigt
 `kubectl -n mongodb describe pvc data-mongodb-0` die Ursache (z. B. NFS-Server nicht erreichbar).
 
+### 20. Argo CD (WSL)
+
+Ab hier verwaltet **Argo CD** die Produkte: Es beobachtet dieses Repo und hält den Cluster auf dem Stand im Git
+(GitOps). Helm-Charts bleiben das Format; Argo CD ersetzt nur den manuellen `helm upgrade`. Argo CD selbst
+installiert ein Skript, weil es vor allem anderen da sein muss.
+
+| Datei | Inhalt |
+|---|---|
+| `platform/argocd/values.yaml` | Abweichungen von der Chart `argo/argo-cd`: `server.insecure` (TLS endet am Gateway), HTTPRoute `argocd.k8s-lab`, kein Dex (SSO) |
+| `platform/argocd/install.sh` | Chart-Version (10.18.2 = Argo CD v3.6.2) + Installation in den Namespace `argocd` |
+| `platform/argocd/apps/*.yaml` | Argo-CD-Applications, z. B. `shop.yaml` |
+
+```bash
+bash platform/argocd/install.sh
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Hosts-Datei ergänzen (`192.168.250.200  argocd.k8s-lab`), `http://argocd.k8s-lab` öffnen, Anmeldung `admin` mit
+dem Passwort oben. Die Chart bringt eigene NetworkPolicies mit; Cilium setzt sie durch – der Server ist für
+Verkehr vom Gateway offen.
+
+**Was Argo CD verwaltet** (derzeit): nur das Produkt `shop`. Plattform-Komponenten (Cilium, Gateway, RabbitMQ,
+MongoDB, NFS-CSI) bleiben bei ihren Skripten; eine Übernahme ist ein späterer Schritt (siehe *Ausblick*).
+
+### 21. Produkt `shop` (WSL)
+
+Die Dienste des Produkts kommen als fertige Images aus ihren eigenen Repos (Build per GitHub Actions,
+Version per GitVersion, Registry ghcr.io). Hier liegt nur das **Helm-Chart des Produkts**
+(`products/shop/chart`), ausgerollt von Argo CD:
+
+| Datei | Inhalt |
+|---|---|
+| `values.yaml` | Hostname (`shop.k8s-lab`), Gateway, `services`: je Dienst Image, Tag, Port, Pfad, Probe, Ressourcen |
+| `templates/deployments.yaml`, `templates/services.yaml` | je Dienst ein Deployment und ein ClusterIP-Service |
+| `templates/httproute.yaml` | eine Route für das Produkt, je Dienst eine Regel nach Pfad; der Präfix wird entfernt (`/api/catalog/x` → `/x`) |
+| `platform/argocd/apps/shop.yaml` | Application: Quelle `products/shop/chart` im Branch `develop`, Ziel Namespace `shop`, automatischer Abgleich |
+
+Derzeitiger Dienst: `catalogservice` (Repo `sschabbach-mse/CatalogService`), Image
+`ghcr.io/sschabbach-mse/catalogservice:0.1.0-create-api.1`, erreichbar unter `http://shop.k8s-lab/api/catalog/`.
+Er hat noch keinen Health-Endpunkt; die Probes prüfen deshalb nur den Port (`probe.type: tcp`).
+
+**Voraussetzungen**
+
+- Das Chart ist nach `develop` **gepusht** – Argo CD liest aus GitHub, nicht aus dem lokalen Arbeitsverzeichnis.
+- Das Paket auf ghcr.io ist öffentlich (GitHub → *Packages* → `catalogservice` → *Package settings* →
+  *Change visibility*). Prüfen auf einem Knoten: `sudo crictl pull ghcr.io/sschabbach-mse/catalogservice:0.1.0-create-api.1`.
+- War `shop` vorher per Helm installiert: `helm -n shop uninstall shop` (keine Übernahme).
+
+```bash
+kubectl apply -f platform/argocd/apps/shop.yaml
+kubectl -n argocd get application shop                 # SYNC STATUS Synced, HEALTH STATUS Healthy
+kubectl -n shop get deploy,pods,svc,httproute
+curl -s --resolve shop.k8s-lab:80:192.168.250.200 http://shop.k8s-lab/api/catalog/WeatherForecast
+```
+
+Hosts-Datei unter Windows ergänzen (`192.168.250.200  shop.k8s-lab`), dann im Browser
+`http://shop.k8s-lab/api/catalog/WeatherForecast`.
+
+**Neue Version eines Dienstes:** Tag in `products/shop/chart/values.yaml` ändern, committen, pushen. Argo CD
+rollt die Änderung innerhalb weniger Minuten aus (sofort: *Refresh* in der Oberfläche). Änderungen direkt im
+Cluster (`kubectl edit`, `helm upgrade`) setzt Argo CD zurück (`selfHeal`).
+
 ## Speicher: Optionen und Entscheidung
 
 Anwendungen (Charts) fordern Speicher nur per PVC und **StorageClass-Name** an. Was dahintersteht, ist Sache
@@ -1186,6 +1254,17 @@ dauert etwa 15–20 Minuten, die meiste Zeit davon Paket-Downloads.
 **Wird neu erzeugt:** VMs, Disks, cloud-init-ISOs, Ansible-Inventory, Cluster (neue Zertifikate, neue
 kubeconfig), Host-Schlüssel der VMs.
 
+**Geht verloren** – es gibt bisher kein Backup:
+
+| Was | Folge |
+|---|---|
+| Daten in MongoDB | neuer Cluster = neues PVC = neues, leeres Verzeichnis auf nfs-1. Bei Variante A liegt das alte Verzeichnis noch auf der Daten-Disk (`onDelete: retain`), wird aber nicht automatisch eingebunden |
+| Passwörter (RabbitMQ, MongoDB, Dienste) | werden neu erzeugt; alle Secrets passen wieder zueinander. Würde man alte MongoDB-Daten einbinden, passten die dort gespeicherten Benutzer **nicht** zu den neuen Secrets |
+| Nachrichten in RabbitMQ | ohnehin nicht persistent |
+| Was nur von Hand im Cluster gemacht wurde | alles, was nicht in diesem Repo steht |
+
+Die Images der Dienste liegen auf ghcr.io und sind nicht betroffen.
+
 ### Variante A: nur die VMs (empfohlen)
 
 Switch und NAT bleiben stehen, keine Admin-Rechte nötig.
@@ -1254,6 +1333,8 @@ kubectl apply -f platform/gateway/gateway.yaml
 bash platform/rabbitmq/install.sh
 bash platform/nfs-csi/install.sh
 bash platform/mongodb/install.sh
+bash platform/argocd/install.sh
+kubectl apply -f platform/argocd/apps/shop.yaml
 kubectl get nodes -o wide
 ```
 
@@ -1375,7 +1456,10 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
   Bis dahin: Ein Eintrag in `clients` mit einem vhost, der in `vhosts` fehlt, lässt `setup.sh` abbrechen
   (nur im Log sichtbar) – optional eine Prüfung im Chart, die die Installation dann verweigert.
 - [ ] RabbitMQ als Cluster mit 3 Knoten: Volumes aus `standard`, `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
-- [ ] Produkt `shop`: Quellcode und Images in eigenem Repo (Angular, zwei ASP.NET-10-APIs); hier ein Helm-Chart unter `products/shop`
+- [ ] Argo CD (Schritt 20); Produkt `shop` über Argo CD (Schritt 21), erster Dienst `catalogservice`; weitere Dienste (orders, Frontend) folgen
+- [ ] Argo CD: Plattform-Komponenten übernehmen (vorher Passwörter ohne `lookup` lösen – Argo CD rendert Charts ohne Cluster-Zugriff, `lookup` liefert dort nichts); App-of-Apps statt einzelner `kubectl apply`
+- [ ] Neuaufbau in einem Durchgang testen; dabei neue VM-Namen
+- [ ] catalogservice: Health-Endpunkt `/healthz` (dann `probe.type: http`), `UseHttpsRedirection` nur in Development, Routen mit gemeinsamem Präfix
 - [x] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
 - [ ] catalog-api: Produkte in MongoDB statt In-Memory
 - [ ] Zurückgestellt: RabbitMQ mit Persistenz bzw. als Cluster, MongoDB mit drei Mitgliedern, GitHub Actions für Images

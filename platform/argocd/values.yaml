@@ -1,0 +1,26 @@
+# Argo CD (Helm-Chart argo/argo-cd) für das k8s-Lab.
+# Enthält nur Abweichungen von den Standardwerten der Chart:
+#   helm show values argo/argo-cd --version <version>
+
+global:
+  domain: argocd.k8s-lab
+
+configs:
+  params:
+    # TLS endet am Gateway (im Lab: reines HTTP). Ohne diese Einstellung leitet der
+    # Argo-CD-Server jede Anfrage auf HTTPS um und ist über das Gateway nicht erreichbar.
+    server.insecure: true
+
+# Weboberfläche über das Gateway: http://argocd.k8s-lab (Hosts-Datei ergänzen)
+server:
+  httproute:
+    enabled: true
+    parentRefs:
+      - name: lab
+        namespace: gateway
+    hostnames:
+      - argocd.k8s-lab
+
+# Keine Anmeldung über externe Identitätsanbieter (SSO) im Lab; Anmeldung mit dem lokalen admin
+dex:
+  enabled: false

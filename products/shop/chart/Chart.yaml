@@ -1,0 +1,5 @@
+apiVersion: v2
+name: shop
+description: Produkt "shop" - Dienste, Services und Routen am Gateway
+type: application
+version: 0.1.0
