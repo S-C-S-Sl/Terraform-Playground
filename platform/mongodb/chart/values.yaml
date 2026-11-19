@@ -19,9 +19,10 @@ auth:
     - orders
 
 persistence:
-  # Muss zum statischen PV passen (platform/storage/chart/values.yaml, Volume "mongodb-0")
   size: 5Gi
-  storageClass: local-storage
+  # Dynamische Bereitstellung über die StorageClass "standard" (im Lab: NFS, platform/nfs-csi).
+  # In einer anderen Umgebung zeigt "standard" auf den dortigen Speicher; das Chart bleibt gleich.
+  storageClass: standard
 
 # WiredTiger-Cache passend zum Speicherlimit (Standard wäre ~50 % des Knoten-RAMs)
 wiredTigerCacheSizeGB: 0.25

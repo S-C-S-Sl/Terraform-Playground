@@ -62,6 +62,16 @@
     group: root
     mode: "0755"
 
+# exportfs liest neben /etc/exports auch /etc/exports.d/*.exports; das Verzeichnis legt
+# das Paket unter Ubuntu nicht von selbst an
+- name: Verzeichnis für Freigaben anlegen
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Freigabe eintragen
   ansible.builtin.copy:
     dest: /etc/exports.d/k8s.exports

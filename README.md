@@ -35,8 +35,8 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   ├── rabbitmq/
 │   │   ├── chart/                # eigenes Helm-Chart: ein Broker, ohne Persistenz
 │   │   └── install.sh
-│   ├── storage/
-│   │   ├── chart/                # StorageClass "local-storage" + statische PVs (values.yaml = Liste der Volumes)
+│   ├── nfs-csi/                  # NFS-CSI-Treiber + StorageClass "standard" (dynamisch)
+│   │   ├── values.yaml
 │   │   └── install.sh
 │   └── mongodb/
 │       ├── chart/                # eigenes Helm-Chart: Replica Set mit einem Mitglied, persistent
@@ -51,14 +51,15 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   ├── kubernetes.yml            # Playbook: containerd + Kubernetes-Pakete
 │   ├── control-plane.yml         # Playbook: kubeadm init, kubeconfig nach WSL
 │   ├── workers.yml               # Playbook: kubeadm join, Taint der Control Plane
-│   ├── storage.yml               # Playbook: Verzeichnisse für die statischen Volumes
+│   ├── nfs-server.yml            # Playbook: NFS-Server auf nfs-1 (Daten-Disk, Freigabe)
 │   ├── requirements.yml          # benötigte Collections
 │   ├── roles/
 │   │   ├── common/               # Updates, Grundpakete, Swap, Kernel-Module, sysctl
 │   │   ├── containerd/           # Container-Runtime (systemd-cgroups)
 │   │   ├── kubernetes/           # kubelet, kubeadm, kubectl aus pkgs.k8s.io, gesperrt
 │   │   ├── control_plane/        # kubeadm-Konfiguration (Template), init, kubeconfig
-│   │   └── worker/               # Join-Befehl erzeugen, kubeadm join, Label
+│   │   ├── worker/               # Join-Befehl erzeugen, kubeadm join, Label
+│   │   └── nfs_server/           # Daten-Disk formatieren/einbinden, NFS-Freigabe
 │   └── inventory/
 │       ├── hosts.yml             # von Terraform erzeugt, nicht eingecheckt
 │       └── group_vars/all.yml    # Verbindung: Benutzer, Schlüssel, SSH-Optionen
@@ -919,42 +920,94 @@ Route abschalten: `bash platform/rabbitmq/install.sh --set management.httpRoute.
 Zugangsdaten anzeigen: `helm -n demo get notes rabbitmq` nennt die Befehle.
 Chart ohne Cluster prüfen: `helm lint platform/rabbitmq/chart`, `helm template rabbitmq platform/rabbitmq/chart -n demo`.
 
-### 19. Speicher und MongoDB (WSL)
+### 19. Speicher (NFS) und MongoDB (PowerShell + WSL)
 
-MongoDB läuft im Cluster wie im Produktivaufbau – und braucht dafür persistenten Speicher.
+MongoDB läuft im Cluster wie im Produktivaufbau und braucht persistenten Speicher. Er wird **dynamisch**
+bereitgestellt: Ein PVC mit der StorageClass `standard` erzeugt automatisch ein Verzeichnis auf dem
+NFS-Server. Pods sind dadurch an keinen Knoten gebunden. Hintergrund und Abwägung: *Speicher: Optionen und Entscheidung*.
 
-**1. Statische Volumes** – Kubernetes trennt Bereitstellung und Nutzung von Speicher: Der Administrator legt
-**PersistentVolumes (PV)** an, Anwendungen fordern Speicher per **PersistentVolumeClaim (PVC)** an. Wir nutzen
-die statische Variante mit eingebauten `local`-Volumes, ohne zusätzlichen Provisioner:
-
-| Bestandteil | Wer | Wo |
-|---|---|---|
-| Liste der Volumes (Name, Knoten, Größe, Besitzer, reserviert für welches PVC) | Administrator | `platform/storage/chart/values.yaml` – **einzige Quelle** |
-| Verzeichnisse `/data/k8s/<name>` auf den Knoten | Ansible | `ansible/storage.yml` (liest dieselbe `values.yaml`) |
-| StorageClass `local-storage` (`kubernetes.io/no-provisioner`) und die PVs | Helm | `platform/storage/chart` |
-| PVC | die Anwendung | z. B. `data-mongodb-0` aus dem StatefulSet von MongoDB |
-
-```bash
-ansible-playbook -i ansible/inventory/hosts.yml ansible/storage.yml
-bash platform/storage/install.sh
-kubectl get pv                          # mongodb-0  5Gi  RWO  Retain  Available  demo/data-mongodb-0  local-storage
+```
+Pod (beliebiger Knoten) ─ PVC data-mongodb-0 (StorageClass standard)
+                              │  NFS-CSI-Treiber legt an: /srv/nfs/k8s/pvc-…
+                              ▼
+        nfs-1 (192.168.250.20): Daten-Disk (XFS) unter /srv/nfs, Freigabe /srv/nfs/k8s
 ```
 
-| Eigenschaft | Folge |
+**1. NFS-Server-VM** – in `terraform/nodes.tf`:
+
+```hcl
+nfs-1 = { role = "nfs", ip = "192.168.250.20", cpus = 1, memory_gb = 1 },
+...
+data_disks = {
+  nfs-1 = 50     # GB, eigene Daten-Disk (data.vhdx), in der VM /dev/sdb
+}
+```
+
+```powershell
+terraform plan      # neu: nfs-1 mit OS-Disk, Daten-Disk, ISO, VM; Inventory mit Gruppen k8s und nfs
+terraform apply
+```
+
+Die Daten-Disk ist eine eigene Ressource (`hyperv_vhd.data`): Wird nur die VM neu gebaut (Neuaufbau Variante A),
+bleiben die Daten erhalten. Das Inventory hat jetzt die Gruppen `k8s` (= `control_plane` + `workers`) und `nfs`;
+`prepare.yml` und `kubernetes.yml` laufen nur auf `k8s`.
+
+**2. NFS-Server und -Client** (WSL):
+
+```bash
+INV=ansible/inventory/hosts.yml
+ansible -i $INV all -m ping
+ansible-playbook -i $INV ansible/nfs-server.yml      # nfs-1
+ansible-playbook -i $INV ansible/prepare.yml         # installiert nfs-common auf den Kubernetes-Knoten
+```
+
+`nfs-server.yml` (Rolle `nfs_server`):
+
+| Schritt | Detail |
 |---|---|
-| `volumeBindingMode: WaitForFirstConsumer` + `nodeAffinity` am PV | der Pod wird auf den Knoten des PVs gesetzt (MongoDB also auf `worker-1`) |
-| `claimRef` am PV | das PV ist für genau ein PVC reserviert, kein anderes kann es belegen |
-| `reclaimPolicy: Retain` | wird das PVC gelöscht, bleiben Daten und PV erhalten (`Released`); Aufräumen ist eine bewusste Handlung |
-| Größe ist eine Zusage, keine Grenze | das Verzeichnis kann so groß werden, wie die Disk des Knotens Platz hat |
-| Daten auf einem Knoten | fällt der Knoten aus, wartet der Pod; ein Neuaufbau der VM löscht die Daten |
+| Daten-Disk formatieren | XFS (von MongoDB empfohlen), **nur wenn noch kein Dateisystem vorhanden ist**; bricht ab, wenn das Gerät Partitionen hat (Schutz vor der falschen Disk) |
+| einbinden | `/srv/nfs`, per UUID, `noatime` |
+| freigeben | `/srv/nfs/k8s` für `192.168.250.0/24` mit `rw,sync,no_subtree_check,no_root_squash` |
 
-**Neues Volume**: Eintrag in `platform/storage/chart/values.yaml`, dann beide Befehle oben erneut ausführen.
+`no_root_squash` ist nötig, weil der CSI-Treiber die Verzeichnisse als root anlegt und kubelet ihre Gruppe
+(`fsGroup`) setzt. Im Lab vertretbar, da die Freigabe nur im Lab-Netz sichtbar ist.
 
-**Volume endgültig freigeben** (nach Löschen des PVC steht es auf `Released`): `kubectl delete pv <name>`,
-Verzeichnis auf dem Knoten löschen, ggf. Eintrag aus `values.yaml` entfernen.
+**3. NFS-CSI-Treiber und StorageClass** (WSL):
 
-**2. MongoDB** – eigenes Helm-Chart (`platform/mongodb/chart`) mit dem Docker Official Image `mongo:8.3`,
-Volume aus der StorageClass `local-storage` (`persistence.storageClass`):
+```bash
+bash platform/nfs-csi/install.sh
+kubectl get storageclass                    # standard   nfs.csi.k8s.io   Delete   Immediate   true
+```
+
+| Einstellung (`platform/nfs-csi/values.yaml`) | Wert | Warum |
+|---|---|---|
+| Name der StorageClass | `standard` | neutral: Charts fordern `standard` an, in Azure zeigt eine StorageClass gleichen Namens auf Azure Disks |
+| `server`, `share` | `192.168.250.20`, `/srv/nfs/k8s` | nfs-1 |
+| `onDelete` | `retain` | Verzeichnis bleibt beim Löschen eines PVC erhalten; Aufräumen ist eine bewusste Handlung |
+| `mountOptions` | `nfsvers=4.1`, `hard`, `noatime` | `hard`/`noatime` laut MongoDB-Empfehlung für NFS |
+| keine Standard-StorageClass | – | jedes PVC nennt `standard` ausdrücklich |
+
+Ein Volume ist bei NFS nicht auf seine Größe begrenzt; die Gesamtgrenze ist die Daten-Disk von nfs-1 (50 GB).
+Grenzen pro Namespace: `ResourceQuota`/`LimitRange` (siehe *Speicher: Optionen und Entscheidung*).
+
+**Test:**
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: nfs-test, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard
+  resources: { requests: { storage: 1Gi } }
+EOF
+kubectl get pvc nfs-test                    # Bound
+kubectl delete pvc nfs-test                 # Verzeichnis bleibt auf nfs-1 (onDelete: retain)
+```
+
+**4. MongoDB** – eigenes Helm-Chart (`platform/mongodb/chart`) mit dem Docker Official Image `mongo:8.3`,
+Volume aus der StorageClass `standard` (`persistence.storageClass`):
 
 | Datei | Inhalt |
 |---|---|
@@ -975,7 +1028,7 @@ bash platform/mongodb/install.sh
 kubectl -n demo get statefulset,pod,pvc -l app.kubernetes.io/instance=mongodb
 ```
 
-`install.sh` prüft vorher, ob die StorageClass `local-storage` existiert, und wartet (`--wait`), bis MongoDB bereit
+`install.sh` prüft vorher, ob die StorageClass `standard` existiert, und wartet (`--wait`), bis MongoDB bereit
 ist, bevor der Init-Job läuft. Ergebnis des Jobs: `kubectl -n demo logs job/mongodb-init` (er wird nach
 Erfolg gelöscht; bei Fehlern bleibt er stehen).
 
@@ -1008,8 +1061,65 @@ kubectl -n demo get secret mongodb -o jsonpath='{.data.app-password}' | base64 -
 ```
 
 **Daten bleiben erhalten** – auch über `helm uninstall` hinweg (Helm löscht die PVCs eines StatefulSets nicht)
-und selbst nach Löschen des PVC (`Retain`). Bleibt der Pod `Pending`, zeigt `kubectl -n demo describe pvc data-mongodb-0`
-meist ein fehlendes oder belegtes PV.
+und nach Löschen des PVC (Verzeichnis bleibt auf nfs-1, `onDelete: retain`). Ein neues PVC bekommt allerdings ein
+**neues** Verzeichnis; alte Daten bindet man nur gezielt wieder ein. Bleibt der Pod `Pending`, zeigt
+`kubectl -n demo describe pvc data-mongodb-0` die Ursache (z. B. NFS-Server nicht erreichbar).
+
+## Speicher: Optionen und Entscheidung
+
+Anwendungen (Charts) fordern Speicher nur per PVC und **StorageClass-Name** an. Was dahintersteht, ist Sache
+der Plattform – im Lab z. B. NFS, in Azure eine Managed Disk. So bleiben die Charts zwischen Lab und Cloud gleich.
+
+**Dynamische Bereitstellung** (PVC → Volume entsteht automatisch) ist heute der Standard, z. B. in AKS/EKS/GKE.
+Statisch (Administrator legt PVs vorab an) nutzt man gezielt, etwa für vorhandene Daten oder Speicher mit
+eigenem Lebenszyklus. Auf die Leistung im Betrieb hat das keinen Einfluss; die hängt allein von der Art des
+Speichers ab (lokal > Block-Disk > Netzwerkdateisystem).
+
+**Größe:** Jedes PVC fordert eine Größe an. Bei Block-Disks ist sie eine harte Grenze, bei NFS und lokalen
+Verzeichnissen nur eine Angabe. Grenzen pro Namespace setzt der Administrator mit `ResourceQuota` (Summe) und
+`LimitRange` (pro PVC). Vergrößern geht, wenn die StorageClass `allowVolumeExpansion: true` erlaubt.
+
+### Optionen im Lab
+
+| Option | Art | Neu im Lab | Pod knotenunabhängig | Dynamisch | Für MongoDB | Cloud-Gegenstück |
+|---|---|---|---|---|---|---|
+| **NFS** (+ NFS-CSI-Treiber) | Datei, im Netz | NFS-VM, Treiber | ja | ja | zulässig, nicht empfohlen | Azure Files |
+| **SMB vom Windows-Host** (+ SMB-CSI-Treiber) | Datei, im Netz | nur der Treiber, keine neue VM | ja | ja | ungeeignet | Azure Files (SMB) |
+| **iSCSI** (Target-VM) | Block-Disk im Netz | iSCSI-VM, `open-iscsi` auf den Knoten; statisch ohne Treiber, dynamisch nur mit Community-Treiber | ja | statisch ja, dynamisch eingeschränkt | gut | Azure Managed Disk (am nächsten dran) |
+| **Longhorn** | Block, über die Knoten repliziert | Longhorn im Cluster, `open-iscsi`, deutlich mehr RAM/Disk pro Knoten | ja | ja | gut | Azure Managed Disk |
+| **Rook/Ceph** | Block, Datei, Objekt, verteilt | Ceph im Cluster, Rohdisks pro Knoten, ≥ 3 Knoten, viel RAM | ja | ja | gut | Managed Disk |
+| **Lokal** (statisch `local` oder local-path-provisioner) | lokale Disk | nichts bzw. Provisioner | **nein** (`local` verlangt `nodeAffinity`) | nur local-path | gut (am schnellsten) | lokale Disk der VM |
+
+Ein CSI-Treiber, der Hyper-V-Disks wie in Azure direkt an VMs hängt, ist nicht bekannt.
+
+| Option | Einordnung |
+|---|---|
+| iSCSI | technisch am nächsten an einer Azure Managed Disk (Block-Disk, wird am Knoten des Pods angehängt); dynamisch nur über Community-Treiber; Server-VM als Einzelausfallpunkt |
+| Longhorn | bildet das Cloud-Verhalten am vollständigsten nach, ohne zentralen Speicherserver; aber die schwerste realistische Option (2 GB RAM pro Worker eher knapp) |
+| NFS | einfachster Weg zu dynamischem, knotenunabhängigem Speicher; Vorbehalt bei MongoDB |
+| SMB | spart die VM, für Datenbanken die schlechteste Wahl |
+| Rook/Ceph | für dieses Lab überdimensioniert |
+| Lokal | widerspricht dem Ziel, dass Pods auf jedem Knoten laufen können |
+
+### MongoDB auf NFS
+
+Laut MongoDB-Produktionshinweisen dürfen WiredTiger-Dateien auf einem entfernten Dateisystem liegen, wenn es
+POSIX-konform (ISO/IEC 9945) ist; die Performance kann darunter leiden. Empfohlene Mount-Optionen: `bg`, `hard`,
+`nolock`, `noatime`, `nointr`. Die Produktions-Checkliste rät dagegen, NFS für den `dbPath` zu vermeiden
+(„degraded and unstable performance“). Fazit: **zulässig, nicht empfohlen** – im Lab mit geringer Last vertretbar.
+In Azure läge MongoDB auf einer Managed Disk; das Chart bleibt dasselbe.
+
+Nebenbefund: MongoDB ist mit Linux-Kerneln 6.19 bis 7.0.13 inkompatibel und beendet sich dort beim Start.
+Ubuntu 24.04 (Kernel 6.8) ist nicht betroffen – bei einem Kernel-Wechsel beachten.
+
+### Entscheidung
+
+**NFS mit dynamischer Bereitstellung** über den NFS-CSI-Treiber (`kubernetes-csi/csi-driver-nfs`, GA, aktuell
+v4.13.6, Kubernetes ≥ 1.21). Der Treiber legt je PVC ein Unterverzeichnis auf dem NFS-Server an; nützliche
+StorageClass-Parameter: `uid`/`gid` (Besitzer des Verzeichnisses, z. B. 999 für MongoDB) und `onDelete: retain`
+(Verzeichnis bleibt beim Löschen des PVC erhalten).
+
+Neu im Lab: eine NFS-Server-VM (`nfs-1`, eigene Daten-Disk) und der NFS-CSI-Treiber. Umsetzung: Schritt 19.
 
 ## Cluster neu aufbauen
 
@@ -1037,6 +1147,10 @@ Switch und NAT bleiben stehen, keine Admin-Rechte nötig.
 ```powershell
 terraform destroy -target='hyperv_machine_instance.node' -target='hyperv_vhd.os' -target='hyperv_iso_image.cidata'
 ```
+
+Die Daten-Disk von nfs-1 (`hyperv_vhd.data`) ist nicht im Ziel und bleibt erhalten – samt aller Volumes. Wird sie
+nach dem Neuaufbau wieder eingebunden, formatiert `nfs-server.yml` sie nicht erneut (vorhandenes Dateisystem).
+Weil der Cluster neu ist, bekommen neue PVCs trotzdem neue Verzeichnisse.
 
 Terraform warnt bei `-target`, dass nur ein Teil abgebaut wird. Das ist hier gewollt.
 
@@ -1066,7 +1180,7 @@ terraform plan       # erwartet: No changes
 `StrictHostKeyChecking=accept-new` lehnt geänderte Schlüssel ab:
 
 ```bash
-for ip in 192.168.250.11 192.168.250.12 192.168.250.13; do ssh-keygen -R "$ip"; done
+for ip in 192.168.250.11 192.168.250.12 192.168.250.13 192.168.250.20; do ssh-keygen -R "$ip"; done
 ```
 
 **3. Zertifikat** (falls abgelaufen) und warten, bis cloud-init fertig ist (1–2 Minuten nach dem `apply`):
@@ -1081,6 +1195,7 @@ ansible -i $INV all -m ping
 **4. Cluster aufbauen – Reihenfolge beachten:**
 
 ```bash
+ansible-playbook -i $INV ansible/nfs-server.yml
 ansible-playbook -i $INV ansible/prepare.yml
 ansible-playbook -i $INV ansible/kubernetes.yml
 ansible-playbook -i $INV ansible/control-plane.yml
@@ -1089,8 +1204,7 @@ ansible-playbook -i $INV ansible/workers.yml
 bash platform/envoy-gateway/install.sh
 kubectl apply -f platform/gateway/gateway.yaml
 bash platform/rabbitmq/install.sh
-ansible-playbook -i $INV ansible/storage.yml
-bash platform/storage/install.sh
+bash platform/nfs-csi/install.sh
 bash platform/mongodb/install.sh
 kubectl get nodes -o wide
 ```
@@ -1147,6 +1261,8 @@ Dauer-Diff vor: vor dem nächsten `apply` prüfen, was der Provider ändern will
 | Gateway (Host) | `192.168.250.1` |
 | NAT | `k8s-lab-nat` |
 | Nodes | ab `192.168.250.11` (statisch per cloud-init) |
+| NFS-Server | `nfs-1`: `192.168.250.20` |
+| LoadBalancer-Pool | `192.168.250.200`–`207` (Cilium LB-IPAM), Gateway: `.200` |
 | DNS der VMs | die DNS-Server des Hosts (`Get-DnsClientServerAddress`), per Variable |
 
 Der internal Switch hat keine Verbindung zur physischen Netzwerkkarte. Über das NAT erreichen die VMs
@@ -1202,10 +1318,9 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [ ] Hubble UI über das Gateway veröffentlichen (`hubble.k8s-lab`) statt per port-forward
 - [ ] Terraform-Prüfung: keine VM-IP im LoadBalancer-Pool
 - [x] RabbitMQ (eigenes Chart, Schritt 18), Management-UI unter `rabbitmq.k8s-lab`
-- [ ] RabbitMQ als Cluster mit 3 Knoten: je ein Volume pro Knoten (statische PVs), `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
+- [ ] RabbitMQ als Cluster mit 3 Knoten: Volumes aus `standard`, `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
 - [ ] Demo-Anwendung: Quellcode (Angular, zwei ASP.NET-10-APIs), Dockerfiles, Images nach ghcr.io, Deployment
-- [ ] Statische Volumes (`local-storage`) und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
-- [ ] Optional: dynamische Bereitstellung (z. B. local-path-provisioner), wenn das Anlegen einzelner PVs lästig wird
+- [ ] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
 - [ ] catalog-api: Produkte in MongoDB statt In-Memory
 - [ ] Zurückgestellt: RabbitMQ mit Persistenz bzw. als Cluster, MongoDB mit drei Mitgliedern, GitHub Actions für Images
 - [ ] Argo CD (eigenes Repo `k8s-gitops`)

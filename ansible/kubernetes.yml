@@ -4,7 +4,7 @@
 # Aufruf (WSL, im Repo-Root):
 #   ansible-playbook -i ansible/inventory/hosts.yml ansible/kubernetes.yml
 - name: Container-Runtime und Kubernetes-Pakete
-  hosts: all
+  hosts: k8s   # Kubernetes-Knoten (control_plane + workers), nicht der NFS-Server
   become: true
   roles:
     - containerd

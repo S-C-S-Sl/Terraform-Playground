@@ -6,6 +6,8 @@ common_packages:
   - conntrack
   - socat
   - ethtool
+  # NFS-Client: kubelet bindet Volumes aus der StorageClass "standard" per NFS ein
+  - nfs-common
 
 # Nach Updates neu starten, wenn das System es verlangt
 common_reboot_if_required: true

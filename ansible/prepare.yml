@@ -3,7 +3,7 @@
 #
 # Aufruf (WSL, im Repo-Root):  ansible-playbook ansible/prepare.yml
 - name: Basis-Konfiguration
-  hosts: all
+  hosts: k8s   # Kubernetes-Knoten (control_plane + workers), nicht der NFS-Server
   become: true
   roles:
     - common

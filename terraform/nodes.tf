@@ -3,6 +3,13 @@ locals {
     cp-1 = {  role = "control_plane", ip = "192.168.250.11", cpus = 2, memory_gb = 4 },
     worker-1 = { role = "worker", ip = "192.168.250.12", cpus = 2, memory_gb = 2 },
     worker-2 = { role = "worker", ip = "192.168.250.13", cpus = 2, memory_gb = 2 },
+    nfs-1    = { role = "nfs", ip = "192.168.250.20", cpus = 1, memory_gb = 1 },
+  }
+
+  # Zusätzliche Daten-Disk (GB) je VM. Eigene Terraform-Ressource, damit ein Neuaufbau
+  # der VM (Betriebssystem-Disk) die Daten nicht löscht.
+  data_disks = {
+    nfs-1 = 50
   }
 
   lab_prefix_length = local.lab_net.prefix_length
@@ -49,6 +56,16 @@ resource "hyperv_vhd" "os" {
   path        = "${var.vm_root}\\${each.key}\\os.vhdx"
   parent_path = var.base_image_path
   vhd_type    = "Differencing" # Pflicht, sonst legt der Provider eine leere Disk an (Doku ist hier falsch)
+}
+
+# --- Daten-Disk (dynamisch wachsend, leer; Ansible legt das Dateisystem an) ---
+resource "hyperv_vhd" "data" {
+  for_each = local.data_disks
+  path     = "${var.vm_root}\\${each.key}\\data.vhdx"
+  vhd_type = "Dynamic"
+  size     = each.value * 1024 * 1024 * 1024
+
+  depends_on = [hyperv_vhd.os] # legt den VM-Ordner an
 }
 
 resource "hyperv_iso_image" "cidata" {
@@ -111,6 +128,18 @@ resource "hyperv_machine_instance" "node" {
     controller_number   = 0
     controller_location = 0
     path                = hyperv_vhd.os[each.key].path
+  }
+
+  # Daten-Disk nur für VMs aus local.data_disks; in der VM als /dev/sdb sichtbar
+  # (Position 1 belegt das DVD-Laufwerk mit der cloud-init-ISO)
+  dynamic "hard_disk_drives" {
+    for_each = contains(keys(local.data_disks), each.key) ? [hyperv_vhd.data[each.key].path] : []
+    content {
+      controller_type     = "Scsi"
+      controller_number   = 0
+      controller_location = 2
+      path                = hard_disk_drives.value
+    }
   }
 
   dvd_drives {

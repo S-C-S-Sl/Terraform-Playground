@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # platform/mongodb/install.sh
-# Installiert oder aktualisiert MongoDB (eigenes Helm-Chart). Setzt die StorageClass und ein
-# freies PV voraus (platform/storage). Standard-Namespace ist der der Anwendungen ("demo"),
+# Installiert oder aktualisiert MongoDB (eigenes Helm-Chart). Setzt die StorageClass "standard"
+# voraus (platform/nfs-csi). Standard-Namespace ist der der Anwendungen ("demo"),
 # weil diese das Secret mit dem Connection-String nur im eigenen Namespace lesen können.
 #
 #   bash platform/mongodb/install.sh
@@ -16,8 +16,8 @@ for cmd in kubectl helm; do
 done
 
 echo "Cluster: $(kubectl config current-context)  Namespace: $NAMESPACE"
-if ! kubectl get storageclass local-storage >/dev/null 2>&1; then
-  echo "StorageClass local-storage fehlt. Zuerst: ansible/storage.yml und bash platform/storage/install.sh" >&2
+if ! kubectl get storageclass standard >/dev/null 2>&1; then
+  echo "StorageClass standard fehlt. Zuerst: ansible/nfs-server.yml und bash platform/nfs-csi/install.sh" >&2
   exit 1
 fi
 
