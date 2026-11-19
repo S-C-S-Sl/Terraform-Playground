@@ -5,7 +5,8 @@ Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
 > Status: Cluster mit drei Knoten (`cp-1`, `worker-1`, `worker-2`; Kubernetes 1.37, Cilium 1.20 mit Hubble),
-> Envoy Gateway unter `192.168.250.200` und RabbitMQ 4.4 laufen. Als Nächstes: Demo-Anwendung (Angular, zwei ASP.NET-10-APIs).
+> Envoy Gateway unter `192.168.250.200`, RabbitMQ 4.4 und MongoDB 8.3 (auf NFS) laufen. Als Nächstes: Produkt `shop`
+> (Quellcode in eigenem Repo, Helm-Chart unter `products/shop`).
 
 ## Struktur
 
@@ -1366,10 +1367,16 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [ ] Hubble UI über das Gateway veröffentlichen (`hubble.k8s-lab`) statt per port-forward
 - [ ] Terraform-Prüfung: keine VM-IP im LoadBalancer-Pool
 - [x] RabbitMQ (eigenes Chart, Schritt 18), Management-UI unter `rabbitmq.k8s-lab`
-- [ ] Namespaces `shop`, `rabbitmq`, `mongodb`; Benutzer und Secrets pro Dienst (siehe *Namespaces*)
+- [x] Namespaces `shop`, `rabbitmq`, `mongodb`; Benutzer und Secrets pro Dienst (siehe *Namespaces*)
+- [ ] Offen: Wo werden vhosts, Benutzer und Datenbanken eines Produkts definiert? Derzeit zentral in den
+  Infrastruktur-Charts (`vhosts`/`clients` in `platform/rabbitmq/chart/values.yaml` und `platform/mongodb/chart/values.yaml`).
+  Fachlich gehört das eher zum Chart der Anwendung (das Produkt kennt seine Dienste); dann bräuchte es einen Weg,
+  wie das Produkt-Chart Zugänge anfordert, ohne Administratorrechte auf RabbitMQ/MongoDB zu haben.
+  Bis dahin: Ein Eintrag in `clients` mit einem vhost, der in `vhosts` fehlt, lässt `setup.sh` abbrechen
+  (nur im Log sichtbar) – optional eine Prüfung im Chart, die die Installation dann verweigert.
 - [ ] RabbitMQ als Cluster mit 3 Knoten: Volumes aus `standard`, `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
 - [ ] Produkt `shop`: Quellcode und Images in eigenem Repo (Angular, zwei ASP.NET-10-APIs); hier ein Helm-Chart unter `products/shop`
-- [ ] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
+- [x] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
 - [ ] catalog-api: Produkte in MongoDB statt In-Memory
 - [ ] Zurückgestellt: RabbitMQ mit Persistenz bzw. als Cluster, MongoDB mit drei Mitgliedern, GitHub Actions für Images
 - [ ] Argo CD (eigenes Repo `k8s-gitops`)
