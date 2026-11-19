@@ -1,0 +1,3 @@
+- name: Exporte neu laden
+  ansible.builtin.command: exportfs -ra
+  changed_when: true

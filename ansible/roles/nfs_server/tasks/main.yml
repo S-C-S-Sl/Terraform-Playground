@@ -1,0 +1,78 @@
+- name: Paketquellen aktualisieren und System aktualisieren
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: dist
+
+- name: NFS-Server und XFS-Werkzeuge installieren
+  ansible.builtin.apt:
+    name:
+      - nfs-kernel-server
+      - xfsprogs
+    state: present
+
+# --- Daten-Disk -------------------------------------------------------------------
+- name: Daten-Disk vorhanden?
+  ansible.builtin.stat:
+    path: "{{ nfs_data_device }}"
+  register: nfs_device
+
+- name: Abbrechen, wenn die Daten-Disk fehlt
+  ansible.builtin.fail:
+    msg: "{{ nfs_data_device }} fehlt. Ist in terraform/nodes.tf eine Daten-Disk für {{ inventory_hostname }} eingetragen?"
+  when: not nfs_device.stat.exists
+
+# Schutz vor dem Formatieren der falschen Disk: Die Daten-Disk darf keine Partitionen
+# haben (die Betriebssystem-Disk hat welche) - es sei denn, sie trägt bereits unser Dateisystem.
+- name: Partitionen und Dateisystem der Daten-Disk ermitteln
+  ansible.builtin.command: lsblk -n -o NAME,FSTYPE {{ nfs_data_device }}
+  register: nfs_lsblk
+  changed_when: false
+
+- name: Abbrechen, wenn die Disk Partitionen hat
+  ansible.builtin.fail:
+    msg: "{{ nfs_data_device }} hat Partitionen - vermutlich nicht die Daten-Disk. Abbruch, nichts formatiert."
+  when: nfs_lsblk.stdout_lines | length > 1
+
+- name: Dateisystem anlegen (nur wenn noch keins vorhanden ist)
+  community.general.filesystem:
+    dev: "{{ nfs_data_device }}"
+    fstype: "{{ nfs_data_fstype }}"
+
+- name: UUID der Daten-Disk ermitteln
+  ansible.builtin.command: blkid -s UUID -o value {{ nfs_data_device }}
+  register: nfs_uuid
+  changed_when: false
+
+# Per UUID statt Gerätename: der Name kann sich bei geänderter Disk-Reihenfolge ändern
+- name: Daten-Disk einbinden
+  ansible.posix.mount:
+    path: "{{ nfs_mount_point }}"
+    src: "UUID={{ nfs_uuid.stdout }}"
+    fstype: "{{ nfs_data_fstype }}"
+    opts: defaults,noatime
+    state: mounted
+
+# --- Freigabe -----------------------------------------------------------------------
+- name: Freigabe-Verzeichnis anlegen
+  ansible.builtin.file:
+    path: "{{ nfs_export_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Freigabe eintragen
+  ansible.builtin.copy:
+    dest: /etc/exports.d/k8s.exports
+    content: |
+      # Verwaltet durch Ansible (roles/nfs_server)
+      {{ nfs_export_dir }} {{ nfs_export_clients }}({{ nfs_export_options }})
+    mode: "0644"
+  notify: Exporte neu laden
+
+- name: NFS-Server starten und beim Boot aktivieren
+  ansible.builtin.systemd_service:
+    name: nfs-server
+    state: started
+    enabled: true

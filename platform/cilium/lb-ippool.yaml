@@ -1,0 +1,13 @@
+# LoadBalancer-IPs für das Lab (Cilium LB-IPAM).
+# LB-IPAM ist in Cilium immer aktiv und vergibt Adressen, sobald ein Pool existiert.
+# Bekanntgemacht werden die Adressen nicht von Cilium, sondern per statischer Route
+# auf dem Windows-Host (README, Schritt 17). Keine VM darf eine dieser IPs bekommen.
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: lab-pool
+spec:
+  blocks:
+    # start/stop statt cidr: so sind alle Adressen nutzbar, auch die erste und letzte
+    - start: "192.168.250.200"
+      stop: "192.168.250.207"

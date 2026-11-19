@@ -4,8 +4,8 @@ Lokales Lab, um einen Kubernetes-Cluster auf Hyper-V aufzubauen.
 Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.terraform.io/providers/taliesins/hyperv/latest)),
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
-> Status: Cluster mit drei Knoten (`cp-1`, `worker-1`, `worker-2`; Kubernetes 1.37, Cilium 1.20 mit Hubble) läuft
-> und lässt sich jederzeit neu aufbauen. Als Nächstes: Entscheidung kube-proxy, LoadBalancer-IPs/Gateway API, Argo CD.
+> Status: Cluster mit drei Knoten (`cp-1`, `worker-1`, `worker-2`; Kubernetes 1.37, Cilium 1.20 mit Hubble),
+> Envoy Gateway unter `192.168.250.200` und RabbitMQ 4.4 laufen. Als Nächstes: Demo-Anwendung (Angular, zwei ASP.NET-10-APIs).
 
 ## Struktur
 
@@ -24,14 +24,34 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   ├── install-helm.sh           # Helm installieren/aktualisieren
 │   └── install-k9s.sh            # k9s installieren/aktualisieren
 ├── platform/                     # Cluster-Inhalte per Helm (WSL)
-│   └── cilium/
-│       ├── values.yaml           # CNI: Abweichungen von den Chart-Standardwerten
-│       └── install.sh            # Chart-Version + Installation/Update
+│   ├── cilium/
+│   │   ├── values.yaml           # CNI: Abweichungen von den Chart-Standardwerten
+│   │   ├── lb-ippool.yaml        # Pool für LoadBalancer-IPs (192.168.250.200-207)
+│   │   └── install.sh            # Chart-Version + Installation/Update + Pool
+│   ├── envoy-gateway/
+│   │   ├── values.yaml           # Gateway-API-Controller
+│   │   └── install.sh
+│   ├── gateway/gateway.yaml      # zentrales Gateway "lab" mit fester IP
+│   ├── rabbitmq/
+│   │   ├── chart/                # eigenes Helm-Chart: ein Broker, ohne Persistenz
+│   │   └── install.sh
+│   ├── storage/
+│   │   ├── chart/                # StorageClass "local-storage" + statische PVs (values.yaml = Liste der Volumes)
+│   │   └── install.sh
+│   └── mongodb/
+│       ├── chart/                # eigenes Helm-Chart: Replica Set mit einem Mitglied, persistent
+│       └── install.sh
+├── examples/
+│   └── demo/demo.yaml            # einfache nginx-Beispielanwendung (Test des Gateways)
+├── apps/                         # eigene Anwendungen (Quellcode, Dockerfile)
+│   └── catalog-api/              # ASP.NET-10-API: Produkte, sendet ProductChanged über RabbitMQ
+
 ├── ansible/                      # Konfiguration der VMs (WSL)
 │   ├── prepare.yml               # Playbook: Basis-Konfiguration aller VMs
 │   ├── kubernetes.yml            # Playbook: containerd + Kubernetes-Pakete
 │   ├── control-plane.yml         # Playbook: kubeadm init, kubeconfig nach WSL
 │   ├── workers.yml               # Playbook: kubeadm join, Taint der Control Plane
+│   ├── storage.yml               # Playbook: Verzeichnisse für die statischen Volumes
 │   ├── requirements.yml          # benötigte Collections
 │   ├── roles/
 │   │   ├── common/               # Updates, Grundpakete, Swap, Kernel-Module, sysctl
@@ -63,6 +83,8 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 | `ansible/` | WSL | Konfiguration der VMs |
 | `platform/` | WSL (Helm) | Inhalte des Clusters, beginnend mit dem CNI |
 | `tools/` | WSL, Bash | Werkzeuge der Arbeitsumgebung installieren |
+| `examples/` | WSL (kubectl) | Beispielanwendungen zum Testen |
+| `apps/` | .NET SDK, Docker | eigene Anwendungen; Beschreibung jeweils in der README des Ordners |
 | `terraform/` | Windows, Admin-PowerShell | Netz und VMs |
 
 Bash-Skripte werden mit `bash <skript>` aufgerufen, nicht über PowerShell. Die `.gitattributes`
@@ -725,6 +747,270 @@ kubectl delete pod client --now && kubectl delete deployment,service web
 Optional, jetzt da es mehrere Knoten gibt: `operator.replicas` in `platform/cilium/values.yaml` auf `2` setzen
 (Ausfallsicherheit des Cilium-Operators) und `bash platform/cilium/install.sh`.
 
+### 17. LoadBalancer-IPs und Gateway (PowerShell + WSL)
+
+Anwendungen werden über **ein zentrales Gateway** von außen erreichbar: eine LoadBalancer-IP, dahinter
+Routing nach Hostnamen (Gateway API). Die Anwendungen selbst behalten normale ClusterIP-Services.
+
+```
+Browser ── demo.k8s-lab ──▶ 192.168.250.200 ──(statische Route)──▶ cp-1 ──(kube-proxy)──▶ Envoy (Gateway "lab")
+                                                                               └─ HTTPRoute ─▶ Service demo ─▶ Pods
+```
+
+| Aufgabe | Wer | Datei |
+|---|---|---|
+| LoadBalancer-IP vergeben | Cilium LB-IPAM | `platform/cilium/lb-ippool.yaml` |
+| IP im Lab-Netz erreichbar machen | statische Route auf dem Windows-Host | – |
+| Verkehr an die IP weiterleiten | kube-proxy | – |
+| Gateway (Routing nach Hostname) | Envoy Gateway | `platform/envoy-gateway/`, `platform/gateway/gateway.yaml` |
+| Route einer Anwendung | `HTTPRoute` | z. B. `examples/demo/demo.yaml` |
+
+**Warum Envoy Gateway und nicht Ciliums Gateway:** Cilium 1.20 setzt für seine Gateway-API-Implementierung den
+kube-proxy-Ersatz voraus (`kubeProxyReplacement=true`), wir behalten kube-proxy aber vorerst. Für die
+L2-Bekanntgabe von LoadBalancer-IPs gilt dasselbe, deshalb die statische Route. Der Umstieg auf Cilium
+für beides ist als Option vorgemerkt (siehe Ausblick).
+
+**Warum die Route reicht:** Das Lab-Netz ist ein interner Switch hinter NAT und ohnehin nur vom Windows-Host
+aus erreichbar. Die Route leistet für diesen einen Client dasselbe wie MetalLB oder L2 Announcements, nur
+ohne automatisches Umschalten, wenn `cp-1` ausfällt.
+
+**1. IP-Pool** (WSL) – `install.sh` legt ihn nach Cilium an:
+
+```bash
+bash platform/cilium/install.sh
+kubectl get ciliumloadbalancerippools          # lab-pool, IPS AVAILABLE 8
+```
+
+Die Adressen `192.168.250.200`–`207` dürfen keiner VM in `terraform/nodes.tf` zugewiesen werden.
+
+**2. Route** (Admin-PowerShell, einmalig, `-p` = bleibt nach Neustarts erhalten):
+
+```powershell
+route -p add 192.168.250.200 mask 255.255.255.248 192.168.250.11
+route print -4 192.168.250.*
+```
+
+Pakete an den ganzen Pool gehen damit an `cp-1`; kube-proxy dort leitet sie an den passenden Pod weiter,
+egal auf welchem Knoten er läuft. Entfernen: `route delete 192.168.250.200`.
+
+**3. Envoy Gateway** (WSL) – installiert Controller und Gateway-API-CRDs:
+
+```bash
+bash platform/envoy-gateway/install.sh
+```
+
+Version: `EG_VERSION` im Skript. Envoy Gateway v1.10 ist laut Kompatibilitätsmatrix mit Kubernetes 1.34–1.37
+und Gateway API v1.6.1 getestet. Helm installiert die CRDs aus der Chart nur bei der Erstinstallation;
+bei einem Versionswechsel die Upgrade-Hinweise in den Release Notes beachten.
+
+**4. Gateway anlegen** (WSL):
+
+```bash
+kubectl apply -f platform/gateway/gateway.yaml
+kubectl -n gateway get gateway lab              # ADDRESS 192.168.250.200, PROGRAMMED True
+kubectl -n envoy-gateway-system get svc         # envoy-gateway-lab-…  LoadBalancer  192.168.250.200
+```
+
+Die feste Adresse kommt über die Annotation `lbipam.cilium.io/ips` am Service, gesetzt über die
+`EnvoyProxy`-Ressource, auf die das Gateway verweist. Dort steht außerdem `externalTrafficPolicy: Cluster`:
+Envoy Gateway setzt standardmäßig `Local`, dann nimmt nur ein Knoten mit Envoy-Pod Verkehr für die IP an.
+Unsere Route führt aber immer zu `cp-1`, während der Envoy-Pod auf einem Worker läuft – mit `Local` endet
+jede Anfrage im Timeout.
+
+**5. Testen** mit der Beispielanwendung:
+
+```bash
+kubectl apply -f examples/demo/demo.yaml
+kubectl -n demo get httproute demo             # HOSTNAMES demo.k8s-lab
+curl --resolve demo.k8s-lab:80:192.168.250.200 http://demo.k8s-lab/ | head -4
+```
+
+`--resolve` ersetzt für den Test den Eintrag in der Hosts-Datei. Hängt `curl` aus WSL, übernimmt WSL die
+Windows-Route offenbar nicht; dann zusätzlich in WSL (gilt bis zum nächsten `wsl --shutdown`):
+`sudo ip route add 192.168.250.200/29 via 192.168.250.11`.
+
+**Im Browser unter Windows:** Hosts-Datei als Administrator bearbeiten
+(`C:\Windows\System32\drivers\etc\hosts`) und eintragen:
+
+```
+192.168.250.200  demo.k8s-lab
+```
+
+Per PowerShell (als Administrator) – mit führendem Zeilenumbruch, falls die Datei ohne Umbruch endet;
+sonst hängt der Eintrag an der letzten Zeile und beschädigt sie:
+
+```powershell
+Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "`r`n192.168.250.200  demo.k8s-lab"
+ipconfig /flushdns
+Resolve-DnsName demo.k8s-lab        # 192.168.250.200
+```
+
+Danach `http://demo.k8s-lab` öffnen (mit `http://`, sonst behandeln manche Browser die Eingabe als Suche).
+Weitere Anwendungen bekommen eine eigene `HTTPRoute` mit eigenem Hostnamen und eine weitere Zeile in der
+Hosts-Datei – aber keine neue IP und keine neue Route. WSL übernimmt die Hosts-Datei erst nach `wsl --shutdown`.
+
+Aufräumen: `kubectl delete -f examples/demo/demo.yaml`.
+
+### 18. RabbitMQ (WSL)
+
+Message-Broker für die geplante Demo-Anwendung (Angular, zwei ASP.NET-10-APIs): Die APIs sollen sich nicht
+direkt aufrufen, sondern nur über RabbitMQ austauschen.
+
+Bereitgestellt über ein **eigenes Helm-Chart** (`platform/rabbitmq/chart`) mit dem Docker Official Image
+`rabbitmq:4.4-management` – ohne Operator und ohne Fremd-Chart:
+
+| Datei | Inhalt |
+|---|---|
+| `values.yaml` | Image, Benutzername, optional Passwort, Management-UI, Ressourcen |
+| `templates/secret.yaml` | Zugangsdaten (`username`, `password`, `host`) für Broker und Anwendungen |
+| `templates/deployment.yaml` | ein Broker, `Recreate` (nie zwei gleichzeitig), Probes |
+| `templates/service.yaml` | AMQP (5672) und Management-UI (15672), nur im Cluster |
+| `templates/httproute.yaml` | Management-UI über das Gateway (`rabbitmq.k8s-lab`), nur wenn die Gateway-API-CRDs vorhanden sind |
+
+| Bewusste Vereinfachung | Folge |
+|---|---|
+| ein einzelner Broker als Deployment, kein Operator | kein Clustering, Upgrades per neuem Image-Tag |
+| keine Persistenz (der Cluster hat noch keine StorageClass) | Nachrichten, Queues und Benutzer der UI gehen bei einem Neustart verloren |
+
+**Passwort:** Ist `auth.password` leer, erzeugt das Chart beim ersten Install ein zufälliges Passwort und
+übernimmt es bei jedem Update aus dem bestehenden Secret (`lookup`). Es steht nie im Repo.
+
+**Namespace:** Standard ist `demo`, der Namespace der späteren Anwendungen: Pods können Secrets nur im
+eigenen Namespace lesen. Eine Anwendung bekommt die Zugangsdaten so als Umgebungsvariablen
+(in .NET z. B. `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password`):
+
+```yaml
+env:
+  - name: RabbitMQ__Password
+    valueFrom:
+      secretKeyRef:
+        name: rabbitmq
+        key: password
+```
+
+**Unabhängig vom Gateway:** RabbitMQ braucht kein Gateway. Anwendungen verbinden sich innerhalb des
+Clusters über den ClusterIP-Service `rabbitmq` (`rabbitmq.demo:5672`). Das Gateway ist nur Komfort für die
+Management-UI: Ist Envoy Gateway installiert (Schritt 17), legt das Chart die Route `rabbitmq.k8s-lab` an;
+fehlen die Gateway-API-CRDs, überspringt es sie und installiert trotzdem. Empfohlene Reihenfolge daher:
+Schritt 17, dann dieser Schritt. Envoy Gateway nachträglich installiert? `install.sh` erneut ausführen.
+
+**Installieren:**
+
+```bash
+kubectl delete -f examples/demo/demo.yaml --ignore-not-found   # nginx-Beispiel nutzt ebenfalls Namespace "demo"
+bash platform/rabbitmq/install.sh
+kubectl -n demo get httproute                   # rabbitmq-management (nur mit Gateway)
+```
+
+**Management-UI über das Gateway:** Hosts-Datei unter Windows ergänzen und `http://rabbitmq.k8s-lab` öffnen:
+
+```
+192.168.250.200  rabbitmq.k8s-lab
+```
+
+**Ohne Gateway** per Port-Forwarding, dann `http://localhost:15672`:
+
+```bash
+kubectl -n demo port-forward svc/rabbitmq 15672:15672
+```
+
+Route abschalten: `bash platform/rabbitmq/install.sh --set management.httpRoute.enabled=false`.
+
+Zugangsdaten anzeigen: `helm -n demo get notes rabbitmq` nennt die Befehle.
+Chart ohne Cluster prüfen: `helm lint platform/rabbitmq/chart`, `helm template rabbitmq platform/rabbitmq/chart -n demo`.
+
+### 19. Speicher und MongoDB (WSL)
+
+MongoDB läuft im Cluster wie im Produktivaufbau – und braucht dafür persistenten Speicher.
+
+**1. Statische Volumes** – Kubernetes trennt Bereitstellung und Nutzung von Speicher: Der Administrator legt
+**PersistentVolumes (PV)** an, Anwendungen fordern Speicher per **PersistentVolumeClaim (PVC)** an. Wir nutzen
+die statische Variante mit eingebauten `local`-Volumes, ohne zusätzlichen Provisioner:
+
+| Bestandteil | Wer | Wo |
+|---|---|---|
+| Liste der Volumes (Name, Knoten, Größe, Besitzer, reserviert für welches PVC) | Administrator | `platform/storage/chart/values.yaml` – **einzige Quelle** |
+| Verzeichnisse `/data/k8s/<name>` auf den Knoten | Ansible | `ansible/storage.yml` (liest dieselbe `values.yaml`) |
+| StorageClass `local-storage` (`kubernetes.io/no-provisioner`) und die PVs | Helm | `platform/storage/chart` |
+| PVC | die Anwendung | z. B. `data-mongodb-0` aus dem StatefulSet von MongoDB |
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.yml ansible/storage.yml
+bash platform/storage/install.sh
+kubectl get pv                          # mongodb-0  5Gi  RWO  Retain  Available  demo/data-mongodb-0  local-storage
+```
+
+| Eigenschaft | Folge |
+|---|---|
+| `volumeBindingMode: WaitForFirstConsumer` + `nodeAffinity` am PV | der Pod wird auf den Knoten des PVs gesetzt (MongoDB also auf `worker-1`) |
+| `claimRef` am PV | das PV ist für genau ein PVC reserviert, kein anderes kann es belegen |
+| `reclaimPolicy: Retain` | wird das PVC gelöscht, bleiben Daten und PV erhalten (`Released`); Aufräumen ist eine bewusste Handlung |
+| Größe ist eine Zusage, keine Grenze | das Verzeichnis kann so groß werden, wie die Disk des Knotens Platz hat |
+| Daten auf einem Knoten | fällt der Knoten aus, wartet der Pod; ein Neuaufbau der VM löscht die Daten |
+
+**Neues Volume**: Eintrag in `platform/storage/chart/values.yaml`, dann beide Befehle oben erneut ausführen.
+
+**Volume endgültig freigeben** (nach Löschen des PVC steht es auf `Released`): `kubectl delete pv <name>`,
+Verzeichnis auf dem Knoten löschen, ggf. Eintrag aus `values.yaml` entfernen.
+
+**2. MongoDB** – eigenes Helm-Chart (`platform/mongodb/chart`) mit dem Docker Official Image `mongo:8.3`,
+Volume aus der StorageClass `local-storage` (`persistence.storageClass`):
+
+| Datei | Inhalt |
+|---|---|
+| `templates/statefulset.yaml` | ein Mitglied, Volume per `volumeClaimTemplates`, Keyfile, WiredTiger-Cache passend zum Limit |
+| `templates/services.yaml` | Headless Service (fester DNS-Name des Mitglieds) und normaler Service |
+| `templates/secret.yaml` | Root- und Anwendungs-Zugangsdaten, Keyfile, fertiger `connection-string` |
+| `templates/init-job.yaml` | Helm-Hook nach jedem Install/Upgrade: `rs.initiate` (falls nötig), Anwendungsbenutzer anlegen/aktualisieren |
+
+| Entscheidung | Warum |
+|---|---|
+| **Replica Set mit einem Mitglied** (`rs0`) | verhält sich für Anwendungen wie ein produktives Replica Set (Transaktionen, Change Streams); später auf drei Mitglieder erweiterbar |
+| **Keyfile** | Pflicht für ein Replica Set mit Authentifizierung, auch bei nur einem Mitglied |
+| **Root-Benutzer nur zur Verwaltung**, Anwendungen nutzen `app` mit `readWrite` auf `catalog` und `orders` | geringste nötige Rechte; Datenbanken in `auth.appDatabases` |
+| Passwörter und Keyfile zufällig erzeugt, bei Updates aus dem Secret übernommen | nichts davon im Repo |
+
+```bash
+bash platform/mongodb/install.sh
+kubectl -n demo get statefulset,pod,pvc -l app.kubernetes.io/instance=mongodb
+```
+
+`install.sh` prüft vorher, ob die StorageClass `local-storage` existiert, und wartet (`--wait`), bis MongoDB bereit
+ist, bevor der Init-Job läuft. Ergebnis des Jobs: `kubectl -n demo logs job/mongodb-init` (er wird nach
+Erfolg gelöscht; bei Fehlern bleibt er stehen).
+
+**Prüfen** (in der VM bzw. im Pod):
+
+```bash
+kubectl -n demo exec mongodb-0 -- bash -c \
+  'mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --quiet --eval "rs.status().members.map(m => m.name + \" \" + m.stateStr)"'
+# [ 'mongodb-0.mongodb-headless.demo.svc.cluster.local:27017 PRIMARY' ]
+```
+
+**Anwendungen** bekommen den Connection-String aus dem Secret:
+
+```yaml
+env:
+  - name: ConnectionStrings__MongoDb
+    valueFrom:
+      secretKeyRef:
+        name: mongodb
+        key: connection-string
+```
+
+**Lokal** (WSL, z. B. für `dotnet run` oder MongoDB Compass) per Port-Forwarding – mit `directConnection=true`,
+weil der Name des Mitglieds nur im Cluster auflösbar ist:
+
+```bash
+kubectl -n demo port-forward svc/mongodb 27017:27017
+# mongodb://app:<app-password>@localhost:27017/?directConnection=true&authSource=admin
+kubectl -n demo get secret mongodb -o jsonpath='{.data.app-password}' | base64 -d; echo
+```
+
+**Daten bleiben erhalten** – auch über `helm uninstall` hinweg (Helm löscht die PVCs eines StatefulSets nicht)
+und selbst nach Löschen des PVC (`Retain`). Bleibt der Pod `Pending`, zeigt `kubectl -n demo describe pvc data-mongodb-0`
+meist ein fehlendes oder belegtes PV.
+
 ## Cluster neu aufbauen
 
 Das Lab ist bewusst wegwerfbar: Alles, was die VMs und den Cluster ausmacht, steht im Repo. Ein Neuaufbau
@@ -798,10 +1084,20 @@ ansible -i $INV all -m ping
 ansible-playbook -i $INV ansible/prepare.yml
 ansible-playbook -i $INV ansible/kubernetes.yml
 ansible-playbook -i $INV ansible/control-plane.yml
-bash platform/cilium/install.sh
+bash platform/cilium/install.sh                     # inkl. IP-Pool
 ansible-playbook -i $INV ansible/workers.yml
+bash platform/envoy-gateway/install.sh
+kubectl apply -f platform/gateway/gateway.yaml
+bash platform/rabbitmq/install.sh
+ansible-playbook -i $INV ansible/storage.yml
+bash platform/storage/install.sh
+bash platform/mongodb/install.sh
 kubectl get nodes -o wide
 ```
+
+Die Route auf dem Windows-Host (`route -p`) und die Hosts-Datei bleiben über den Neuaufbau hinweg bestehen,
+solange sich die IPs nicht ändern. Bei Variante B (alles abbauen) zeigt die Route zwischenzeitlich ins Leere;
+das ist unschädlich.
 
 Cilium kommt **vor** `workers.yml`: Ohne CNI wird kein Knoten `Ready`, und `workers.yml` wartet genau darauf.
 Hubble Relay und UI bleiben bis zum Join der Worker `Pending`, weil die Control Plane per Taint für sie gesperrt
@@ -872,6 +1168,8 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 | `ansible all -m ping` scheitert mit `Permission denied`, das Playbook funktioniert | `group_vars/` liegt neben dem Playbook statt neben dem Inventory. Ad-hoc-Befehle finden es dort nicht und verbinden sich als WSL-Benutzer statt als `ubuntu`. Richtig: `ansible/inventory/group_vars/all.yml` |
 | `ansible: command not found`, aber `pipx` meldet *already seems to be installed* | `~/.local/bin` fehlt im `PATH`: `pipx ensurepath`, dann `exec bash` (*Werkzeuge in WSL*). Nicht `apt install ansible-core`. |
 | `No inventory was parsed, only implicit localhost is available` | Kein Inventory angegeben: `-i ansible/inventory/hosts.yml` oder `ANSIBLE_INVENTORY` setzen (Schritt 9). Fehlt die Datei, mit `terraform apply` neu erzeugen. |
+| Gateway-IP: `curl` läuft in einen Timeout, `kubectl get gateway` zeigt die Adresse | `externalTrafficPolicy: Local` am Envoy-Service, Envoy-Pod nicht auf `cp-1`. In der `EnvoyProxy`-Ressource `externalTrafficPolicy: Cluster` setzen (Schritt 17). Prüfen: `kubectl -n envoy-gateway-system get svc -o custom-columns=NAME:.metadata.name,POLICY:.spec.externalTrafficPolicy` |
+| `Resolve-DnsName <name>.k8s-lab` liefert einen CNAME auf einen fremden Namen bzw. `127.0.0.1` | Eintrag wurde an die letzte Zeile der Hosts-Datei angehängt (Datei endete ohne Zeilenumbruch). Zeile als Administrator in zwei Zeilen aufteilen, `ipconfig /flushdns` |
 | `ssh: connect to host … No route to host`, VM läuft | Netzwerkkarte vom Switch getrennt (siehe *Eigenheiten des Hyper-V-Providers*). Prüfen: `Get-VMNetworkAdapter -VMName cp-1`; wieder verbinden: `Connect-VMNetworkAdapter -VMName cp-1 -Name lab -SwitchName k8s-lab` |
 | `ping` aus WSL: `Destination Host Unreachable` | VM aus (`Get-VM cp-1` in PowerShell, ggf. `Start-VM cp-1`) oder Netzwerkkarte getrennt (Zeile darüber). |
 | `terraform plan` zeigt nach `apply` weiter Änderungen | Dauer-Diff durch den Provider, siehe *Eigenheiten des Hyper-V-Providers*. |
@@ -898,7 +1196,17 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [x] Hubble Relay und UI (Schritt 15)
 - [x] Worker-Knoten (`kubeadm join`), danach Taint der Control Plane wieder setzen (Schritt 16)
 - [ ] Neuaufbau in einem Durchgang (Skript bzw. `site.yml` für die Schritte nach `terraform apply`)
-- [ ] **Entscheidung offen:** kube-proxy behalten oder durch Cilium ersetzen (L2 Announcements für LoadBalancer-IPs setzen den Ersatz voraus)
-- [ ] LoadBalancer-IPs und Gateway API (vorerst über eine statische Route auf dem Windows-Host)
+- [x] Entscheidung: kube-proxy bleibt vorerst (Option B)
+- [x] LoadBalancer-IPs (Cilium LB-IPAM + statische Route) und Gateway API mit Envoy Gateway (Schritt 17)
+- [ ] Option A (vorgemerkt): kube-proxy durch Cilium ersetzen – dann Cilium-Gateway und L2 Announcements statt Envoy Gateway und Route
+- [ ] Hubble UI über das Gateway veröffentlichen (`hubble.k8s-lab`) statt per port-forward
+- [ ] Terraform-Prüfung: keine VM-IP im LoadBalancer-Pool
+- [x] RabbitMQ (eigenes Chart, Schritt 18), Management-UI unter `rabbitmq.k8s-lab`
+- [ ] RabbitMQ als Cluster mit 3 Knoten: je ein Volume pro Knoten (statische PVs), `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
+- [ ] Demo-Anwendung: Quellcode (Angular, zwei ASP.NET-10-APIs), Dockerfiles, Images nach ghcr.io, Deployment
+- [ ] Statische Volumes (`local-storage`) und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
+- [ ] Optional: dynamische Bereitstellung (z. B. local-path-provisioner), wenn das Anlegen einzelner PVs lästig wird
+- [ ] catalog-api: Produkte in MongoDB statt In-Memory
+- [ ] Zurückgestellt: RabbitMQ mit Persistenz bzw. als Cluster, MongoDB mit drei Mitgliedern, GitHub Actions für Images
 - [ ] Argo CD (eigenes Repo `k8s-gitops`)
 - [ ] RHEL-Image (Developer Subscription) als zweite Distribution

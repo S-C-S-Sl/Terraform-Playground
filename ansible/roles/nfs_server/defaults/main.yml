@@ -1,0 +1,12 @@
+# Daten-Disk aus terraform/nodes.tf (local.data_disks), in der VM /dev/sdb
+nfs_data_device: /dev/sdb
+# XFS: von MongoDB für Datenbankdateien empfohlen
+nfs_data_fstype: xfs
+nfs_mount_point: /srv/nfs
+
+# Freigabe für Kubernetes; der NFS-CSI-Treiber legt darunter je PVC ein Verzeichnis an
+nfs_export_dir: /srv/nfs/k8s
+nfs_export_clients: 192.168.250.0/24
+# no_root_squash: Der CSI-Treiber legt Verzeichnisse als root an und kubelet setzt deren
+# Gruppe (fsGroup). Mit root_squash würde root auf dem Server zu "nobody".
+nfs_export_options: rw,sync,no_subtree_check,no_root_squash

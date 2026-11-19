@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rabbitmq
+description: Einzelner RabbitMQ-Broker für das k8s-Lab (Docker Official Image, ohne Persistenz)
+type: application
+version: 0.1.0
+appVersion: "4.4"

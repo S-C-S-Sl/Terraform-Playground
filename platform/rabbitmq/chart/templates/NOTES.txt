@@ -1,0 +1,11 @@
+RabbitMQ "{{ include "rabbitmq.fullname" . }}" im Namespace {{ .Release.Namespace }} installiert ({{ .Values.image.repository }}:{{ .Values.image.tag }}).
+
+AMQP im Cluster:  {{ include "rabbitmq.fullname" . }}.{{ .Release.Namespace }}:5672
+{{- if .Values.management.httpRoute.enabled }}
+Management-UI:    http://{{ .Values.management.httpRoute.hostname }}/
+                  Hosts-Datei (Windows): 192.168.250.200  {{ .Values.management.httpRoute.hostname }}
+{{- end }}
+
+Zugangsdaten (Secret "{{ include "rabbitmq.fullname" . }}", Schlüssel username/password/host):
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "rabbitmq.fullname" . }} -o jsonpath='{.data.username}' | base64 -d; echo
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "rabbitmq.fullname" . }} -o jsonpath='{.data.password}' | base64 -d; echo

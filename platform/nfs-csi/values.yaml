@@ -1,0 +1,24 @@
+# NFS-CSI-Treiber (Helm-Chart csi-driver-nfs/csi-driver-nfs) für das k8s-Lab.
+# Enthält nur Abweichungen von den Standardwerten der Chart:
+#   helm show values csi-driver-nfs/csi-driver-nfs --version <version>
+#
+# Der Treiber legt je PVC ein Unterverzeichnis auf dem NFS-Server an (dynamische Bereitstellung).
+# Den NFS-Server richtet ansible/nfs-server.yml ein (VM nfs-1, 192.168.250.20).
+
+storageClass:
+  create: true
+  # Neutraler Name: Charts fordern "standard" an. In einer anderen Umgebung (z. B. Azure)
+  # zeigt eine StorageClass gleichen Namens auf einen anderen Speicher - die Charts bleiben gleich.
+  name: standard
+  parameters:
+    server: 192.168.250.20          # nfs-1, siehe terraform/nodes.tf
+    share: /srv/nfs/k8s             # Freigabe, siehe ansible/roles/nfs_server/defaults/main.yml
+    # Beim Löschen eines PVC bleibt das Verzeichnis auf dem NFS-Server erhalten (bewusstes Aufräumen)
+    onDelete: retain
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+  mountOptions:
+    - nfsvers=4.1
+    # hard: bei Ausfall des Servers warten statt Fehler an die Anwendung zu melden (MongoDB-Empfehlung)
+    - hard
+    - noatime

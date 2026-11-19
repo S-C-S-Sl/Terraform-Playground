@@ -1,0 +1,57 @@
+# Zentrales Gateway des Labs: eine LoadBalancer-IP, an die sich alle Anwendungen
+# per HTTPRoute anhängen. Umgesetzt von Envoy Gateway.
+#
+#   kubectl apply -f platform/gateway/gateway.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway
+---
+# Welche Implementierung hinter Gateways dieser Klasse steckt
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+# Envoy-spezifische Einstellungen für das Gateway "lab": feste IP aus dem
+# Cilium-Pool, damit Route und Hosts-Datei stabil bleiben
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: lab-proxy
+  namespace: gateway
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        # Standard wäre "Local": Ein Knoten nimmt Verkehr für die LoadBalancer-IP dann nur an,
+        # wenn dort ein Envoy-Pod läuft. Unsere statische Route führt aber immer zu cp-1,
+        # der Envoy-Pod läuft auf einem Worker. "Cluster": jeder Knoten leitet weiter.
+        externalTrafficPolicy: Cluster
+        annotations:
+          lbipam.cilium.io/ips: "192.168.250.200"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: lab
+  namespace: gateway
+spec:
+  gatewayClassName: eg
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: lab-proxy
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      # Routen aus allen Namespaces dürfen sich anhängen (Lab; in Produktion einschränken)
+      allowedRoutes:
+        namespaces:
+          from: All

@@ -41,4 +41,9 @@ helm upgrade --install "$RELEASE" cilium/cilium \
 
 kubectl -n "$NAMESPACE" rollout status ds/cilium --timeout=5m
 kubectl -n "$NAMESPACE" rollout status deploy/cilium-operator --timeout=5m
+
+# IP-Pool für LoadBalancer-Services (CRD kommt mit Cilium, deshalb erst danach)
+kubectl apply -f "$HERE/lb-ippool.yaml"
+kubectl get ciliumloadbalancerippools
+
 kubectl get nodes

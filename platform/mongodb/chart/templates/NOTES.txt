@@ -1,0 +1,19 @@
+MongoDB "{{ include "mongodb.fullname" . }}" im Namespace {{ .Release.Namespace }} ({{ include "mongodb.image" . }}),
+Replica Set "{{ .Values.replicaSetName }}" mit einem Mitglied: {{ include "mongodb.memberHost" . }}
+
+Status:    kubectl -n {{ .Release.Namespace }} logs job/{{ include "mongodb.fullname" . }}-init   (nur bis zum Abschluss vorhanden)
+
+Anwendungen im Cluster (Secret "{{ include "mongodb.fullname" . }}", Schlüssel connection-string):
+  env:
+    - name: ConnectionStrings__MongoDb
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "mongodb.fullname" . }}
+          key: connection-string
+
+Lokal (WSL) per port-forward - mit directConnection, weil der Name des Mitglieds nur im Cluster auflösbar ist:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "mongodb.fullname" . }} 27017:27017
+  mongodb://<app-username>:<app-password>@localhost:27017/?directConnection=true&authSource=admin
+
+Zugangsdaten:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "mongodb.fullname" . }} -o jsonpath='{.data.app-password}' | base64 -d; echo

@@ -1,0 +1,71 @@
+# Läuft nach jedem Install/Upgrade: initiiert das Replica Set (falls nötig) und legt den
+# Anwendungsbenutzer an bzw. aktualisiert Passwort und Rechte. Idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mongodb.fullname" . }}-init
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb-init
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+      containers:
+        - name: init
+          image: {{ include "mongodb.image" . }}
+          env:
+            - name: HOME
+              value: /tmp
+            - name: RS_NAME
+              value: {{ .Values.replicaSetName | quote }}
+            - name: RS_HOST
+              value: {{ include "mongodb.memberHost" . | quote }}
+            - name: APP_DATABASES
+              value: {{ join "," .Values.auth.appDatabases | quote }}
+            {{- range $env, $key := dict "ROOT_USER" "root-username" "ROOT_PASSWORD" "root-password" "APP_USER" "app-username" "APP_PASSWORD" "app-password" }}
+            - name: {{ $env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mongodb.fullname" $ }}
+                  key: {{ $key }}
+            {{- end }}
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              # Vor rs.initiate gibt es noch kein Replica Set: direkt mit dem Mitglied verbinden
+              URI="mongodb://${ROOT_USER}:${ROOT_PASSWORD}@${RS_HOST}/admin?directConnection=true"
+              for i in $(seq 1 60); do
+                mongosh "$URI" --quiet --eval 'db.adminCommand("ping")' >/dev/null 2>&1 && break
+                echo "Warte auf MongoDB ($i/60) ..."; sleep 5
+              done
+              mongosh "$URI" --quiet <<'EOJS'
+              let initiated = true;
+              try { rs.status(); }
+              catch (e) { if (e.codeName === "NotYetInitialized") initiated = false; else throw e; }
+              if (!initiated) {
+                rs.initiate({ _id: process.env.RS_NAME, members: [{ _id: 0, host: process.env.RS_HOST }] });
+                print("Replica Set initiiert: " + process.env.RS_NAME);
+              }
+              for (let i = 0; i < 60 && !db.hello().isWritablePrimary; i++) sleep(1000);
+              if (!db.hello().isWritablePrimary) throw new Error("Kein Primary nach 60 Sekunden");
+
+              const admin = db.getSiblingDB("admin");
+              const user = process.env.APP_USER, pwd = process.env.APP_PASSWORD;
+              const roles = process.env.APP_DATABASES.split(",").map(d => d.trim()).filter(d => d)
+                .map(d => ({ role: "readWrite", db: d }));
+              if (admin.getUser(user)) { admin.updateUser(user, { pwd: pwd, roles: roles }); print("Benutzer aktualisiert: " + user); }
+              else { admin.createUser({ user: user, pwd: pwd, roles: roles }); print("Benutzer angelegt: " + user); }
+              EOJS

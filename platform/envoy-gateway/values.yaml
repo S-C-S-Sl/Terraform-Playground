@@ -1,0 +1,4 @@
+# Envoy Gateway für das k8s-Lab (Helm-Chart oci://docker.io/envoyproxy/gateway-helm).
+# Enthält nur Abweichungen von den Standardwerten der Chart; derzeit keine.
+#   helm show values oci://docker.io/envoyproxy/gateway-helm --version <version>
+{}

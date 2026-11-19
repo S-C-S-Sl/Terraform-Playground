@@ -1,0 +1,10 @@
+# Richtet den NFS-Server für die StorageClass "standard" ein (Gruppe "nfs").
+# Formatiert die Daten-Disk beim ersten Lauf, bindet sie ein und exportiert sie ins Lab-Netz.
+#
+# Aufruf (WSL, im Repo-Root):
+#   ansible-playbook -i ansible/inventory/hosts.yml ansible/nfs-server.yml
+- name: NFS-Server
+  hosts: nfs
+  become: true
+  roles:
+    - nfs_server

@@ -1,0 +1,25 @@
+# Docker Official Image; -management enthält die Weboberfläche (Port 15672)
+image:
+  repository: rabbitmq
+  tag: "4.4-management"
+
+auth:
+  username: app
+  # Leer = beim ersten Install zufällig erzeugen und bei Updates beibehalten
+  password: ""
+
+# Management-UI über das Gateway veröffentlichen (Hosts-Datei ergänzen)
+management:
+  httpRoute:
+    enabled: true
+    hostname: rabbitmq.k8s-lab
+    gateway:
+      name: lab
+      namespace: gateway
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
