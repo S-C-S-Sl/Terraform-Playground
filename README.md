@@ -43,8 +43,7 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │       └── install.sh
 ├── examples/
 │   └── demo/demo.yaml            # einfache nginx-Beispielanwendung (Test des Gateways)
-├── apps/                         # eigene Anwendungen (Quellcode, Dockerfile)
-│   └── catalog-api/              # ASP.NET-10-API: Produkte, sendet ProductChanged über RabbitMQ
+├── products/                     # Helm-Charts der Produkte (geplant), z. B. products/shop
 
 ├── ansible/                      # Konfiguration der VMs (WSL)
 │   ├── prepare.yml               # Playbook: Basis-Konfiguration aller VMs
@@ -85,8 +84,13 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 | `platform/` | WSL (Helm) | Inhalte des Clusters, beginnend mit dem CNI |
 | `tools/` | WSL, Bash | Werkzeuge der Arbeitsumgebung installieren |
 | `examples/` | WSL (kubectl) | Beispielanwendungen zum Testen (`examples/demo` im Namespace `demo`) |
-| `apps/` | .NET SDK, Docker | eigene Anwendungen; Beschreibung jeweils in der README des Ordners |
+| `products/` | WSL (Helm) | Helm-Charts der Produkte; der Quellcode der Dienste liegt in eigenen Repos (siehe unten) |
 | `terraform/` | Windows, Admin-PowerShell | Netz und VMs |
+
+**Trennung von Infrastruktur und Anwendungen**: Dieses Repo beschreibt die Plattform (VMs, Cluster,
+gemeinsame Infrastruktur) und enthält die **Helm-Charts** der Produkte. Der **Quellcode** der Dienste
+(z. B. catalog-api, orders-api, Frontend) samt Dockerfiles liegt in eigenen Repos; von dort kommen fertige
+Images, die die Charts hier nur referenzieren.
 
 Bash-Skripte werden mit `bash <skript>` aufgerufen, nicht über PowerShell. Die `.gitattributes`
 (`* text=auto eol=lf`) sorgt dafür, dass sie auch unter Windows mit LF-Zeilenenden ausgecheckt werden.
@@ -487,8 +491,8 @@ ansible-playbook -i ansible/inventory/hosts.yml ansible/prepare.yml             
 - **Zweiter echter Lauf**: muss im `PLAY RECAP` `changed=0` zeigen (Idempotenz). Ein `changed` deutet auf
   einen Task hin, der nicht sauber idempotent geschrieben ist.
 - Fakten werden über `ansible_facts['…']` gelesen, nicht über `ansible_…`-Variablen (ab ansible-core 2.24 entfernt). Die Collections `ansible.posix`
-und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
-`ansible-galaxy collection install -r ansible/requirements.yml`.
+  und `community.general` sind im Paket `ansible` enthalten; nur bei reinem `ansible-core`:
+  `ansible-galaxy collection install -r ansible/requirements.yml`.
 
 ### 12. Container-Runtime und Kubernetes-Pakete (WSL)
 
@@ -900,18 +904,31 @@ Bereitgestellt über ein **eigenes Helm-Chart** (`platform/rabbitmq/chart`) mit 
 | `values.yaml` | Image, Administrator, `vhosts`, `clients` (Dienste), Management-UI, Ressourcen |
 | `templates/secret.yaml` | Verwaltungs-Secret: Administrator und Passwörter der Dienste |
 | `templates/client-secrets.yaml` | je Dienst ein Secret `rabbitmq-<dienst>` im Namespace des Dienstes |
-| `templates/deployment.yaml` | ein Broker, `Recreate`, Probes; **postStart** legt vhosts, Benutzer und Rechte an |
+| `templates/configmap-setup.yaml` | Einrichtungsskript `setup.sh`: vhosts, Benutzer der Dienste, Rechte |
+| `templates/deployment.yaml` | ein Broker, `Recreate`, Probes; Startbefehl führt `setup.sh` im Hintergrund aus |
 | `templates/service.yaml` | AMQP (5672) und Management-UI (15672), nur im Cluster |
 | `templates/httproute.yaml` | Management-UI über das Gateway (`rabbitmq.k8s-lab`), nur wenn die Gateway-API-CRDs vorhanden sind |
 
 | Bewusste Vereinfachung | Folge |
 |---|---|
 | ein einzelner Broker als Deployment, kein Operator | kein Clustering, Upgrades per neuem Image-Tag |
-| keine Persistenz | Nachrichten und Queues gehen bei einem Neustart verloren; vhosts und Benutzer legt `postStart` bei jedem Start neu an |
+| keine Persistenz | Nachrichten und Queues gehen bei einem Neustart verloren; vhosts und Benutzer legt `setup.sh` bei jedem Start neu an |
 
 **Benutzer**: `admin` (Verwaltung, Management-UI) aus dem Image (`RABBITMQ_DEFAULT_USER`). Die Dienste bekommen je einen
-eigenen Benutzer mit vollen Rechten auf **ihrem** vhost (`clients` in `values.yaml`), angelegt per `rabbitmqctl`
-im `postStart`-Hook. Fehlt ein Recht, lehnt RabbitMQ die Verbindung des Dienstes zu einem fremden vhost ab.
+eigenen Benutzer mit vollen Rechten auf **ihrem** vhost (`clients` in `values.yaml`), angelegt per `rabbitmqctl`.
+Fehlt ein Recht, lehnt RabbitMQ die Verbindung des Dienstes zu einem fremden vhost ab.
+
+**Einrichtung beim Start**: Der Container startet mit
+`gosu rabbitmq bash /opt/lab/setup.sh & exec docker-entrypoint.sh rabbitmq-server` – das Skript im Hintergrund,
+danach der Broker wie im Image vorgesehen. Das Skript wartet auf den Broker und schreibt ins Container-Log
+(`kubectl -n rabbitmq logs deploy/rabbitmq | grep lab-setup`). Manuell wiederholen:
+`kubectl -n rabbitmq exec deploy/rabbitmq -- bash /opt/lab/setup.sh`.
+
+| Erfahrung beim Aufbau | Folge für die Lösung |
+|---|---|
+| `postStart`-Hook scheiterte (Container in `CrashLoopBackOff`, Events nur „PostStartHook failed“) | kein Hook, sondern Startbefehl mit Hintergrundskript |
+| Als root aufgerufen, legt `rabbitmqctl` das fehlende Erlang-Cookie als root an; der Broker (Benutzer `rabbitmq`) kann es nicht lesen: `.erlang.cookie: eacces` | Skript läuft per `gosu` als `rabbitmq` und wartet, bis der Broker das Cookie angelegt hat |
+| `rabbitmqctl await_startup` scheitert sofort, solange der Erlang-Knoten noch nicht erreichbar ist | Warteschleife um `await_startup` |
 
 **Unabhängig vom Gateway:** Dienste verbinden sich über `rabbitmq.rabbitmq.svc.cluster.local:5672`. Das Gateway ist
 nur Komfort für die Management-UI: Ist Envoy Gateway installiert (Schritt 17), legt das Chart die Route
@@ -1316,6 +1333,7 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 | `No inventory was parsed, only implicit localhost is available` | Kein Inventory angegeben: `-i ansible/inventory/hosts.yml` oder `ANSIBLE_INVENTORY` setzen (Schritt 9). Fehlt die Datei, mit `terraform apply` neu erzeugen. |
 | Gateway-IP: `curl` läuft in einen Timeout, `kubectl get gateway` zeigt die Adresse | `externalTrafficPolicy: Local` am Envoy-Service, Envoy-Pod nicht auf `cp-1`. In der `EnvoyProxy`-Ressource `externalTrafficPolicy: Cluster` setzen (Schritt 17). Prüfen: `kubectl -n envoy-gateway-system get svc -o custom-columns=NAME:.metadata.name,POLICY:.spec.externalTrafficPolicy` |
 | `Resolve-DnsName <name>.k8s-lab` liefert einen CNAME auf einen fremden Namen bzw. `127.0.0.1` | Eintrag wurde an die letzte Zeile der Hosts-Datei angehängt (Datei endete ohne Zeilenumbruch). Zeile als Administrator in zwei Zeilen aufteilen, `ipconfig /flushdns` |
+| RabbitMQ in `CrashLoopBackOff`, Log: `Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces` | Cookie wurde von einem root-Prozess angelegt (z. B. `rabbitmqctl` vor dem Broker). Einrichtung als Benutzer `rabbitmq` ausführen (`gosu`), siehe Schritt 18 |
 | `ssh: connect to host … No route to host`, VM läuft | Netzwerkkarte vom Switch getrennt (siehe *Eigenheiten des Hyper-V-Providers*). Prüfen: `Get-VMNetworkAdapter -VMName cp-1`; wieder verbinden: `Connect-VMNetworkAdapter -VMName cp-1 -Name lab -SwitchName k8s-lab` |
 | `ping` aus WSL: `Destination Host Unreachable` | VM aus (`Get-VM cp-1` in PowerShell, ggf. `Start-VM cp-1`) oder Netzwerkkarte getrennt (Zeile darüber). |
 | `terraform plan` zeigt nach `apply` weiter Änderungen | Dauer-Diff durch den Provider, siehe *Eigenheiten des Hyper-V-Providers*. |
@@ -1350,7 +1368,7 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [x] RabbitMQ (eigenes Chart, Schritt 18), Management-UI unter `rabbitmq.k8s-lab`
 - [ ] Namespaces `shop`, `rabbitmq`, `mongodb`; Benutzer und Secrets pro Dienst (siehe *Namespaces*)
 - [ ] RabbitMQ als Cluster mit 3 Knoten: Volumes aus `standard`, `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
-- [ ] Demo-Anwendung: Quellcode (Angular, zwei ASP.NET-10-APIs), Dockerfiles, Images nach ghcr.io, Deployment
+- [ ] Produkt `shop`: Quellcode und Images in eigenem Repo (Angular, zwei ASP.NET-10-APIs); hier ein Helm-Chart unter `products/shop`
 - [ ] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
 - [ ] catalog-api: Produkte in MongoDB statt In-Memory
 - [ ] Zurückgestellt: RabbitMQ mit Persistenz bzw. als Cluster, MongoDB mit drei Mitgliedern, GitHub Actions für Images
