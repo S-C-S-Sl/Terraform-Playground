@@ -5,8 +5,8 @@ Infrastruktur mit **Terraform** (Provider [`taliesins/hyperv`](https://registry.
 später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 
 > Status: Cluster mit drei Knoten (`cp-1`, `worker-1`, `worker-2`; Kubernetes 1.37, Cilium 1.20 mit Hubble),
-> Envoy Gateway unter `192.168.250.200`, RabbitMQ 4.4 und MongoDB 8.3 (auf NFS) laufen. Als Nächstes: Argo CD und
-> Produkt `shop` (Quellcode in eigenem Repo, Helm-Chart unter `products/shop`), danach Test des Neuaufbaus.
+> Envoy Gateway unter `192.168.250.200`, RabbitMQ 4.4, MongoDB 8.3 (auf NFS) und Argo CD laufen; das Produkt `shop`
+> wird von Argo CD ausgerollt. Der Neuaufbau in einem Durchgang ist getestet.
 
 ## Struktur
 
@@ -1239,8 +1239,9 @@ Neu im Lab: eine NFS-Server-VM (`nfs-1`, eigene Daten-Disk) und der NFS-CSI-Trei
 
 ## Cluster neu aufbauen
 
-Das Lab ist bewusst wegwerfbar: Alles, was die VMs und den Cluster ausmacht, steht im Repo. Ein Neuaufbau
-dauert etwa 15–20 Minuten, die meiste Zeit davon Paket-Downloads.
+Das Lab ist bewusst wegwerfbar: Alles, was die VMs und den Cluster ausmacht, steht im Repo. Der vollständige
+Neuaufbau (Variante B, inkl. Plattform und Produkt) ist erfolgreich getestet. Dauer: geschätzt etwa 30 Minuten,
+die meiste Zeit davon Paket- und Image-Downloads (nicht ohne Unterbrechungen gemessen).
 
 **Bleibt beim Neuaufbau erhalten** (einmalige Einrichtung, siehe Schritte 1–3 und 5–6):
 
@@ -1295,31 +1296,28 @@ Hosts-Datei entfernen.
 
 ### Aufbauen (beide Varianten)
 
-**1. Infrastruktur** (PowerShell, Ordner `terraform`; bei Variante B als Admin):
+Bei Fehlern an der Stelle anhalten – jeder Schritt setzt den vorherigen voraus.
+
+**1. Infrastruktur** (PowerShell, Ordner `terraform`; bei Variante B als **Admin**, weil das NAT-Skript läuft):
 
 ```powershell
 ..\host\Terraform-SetUserEnv.ps1
-terraform apply
-terraform plan       # erwartet: No changes
+terraform apply              # Variante B: 16 to add
+terraform plan               # erwartet: No changes
 ```
 
-**2. Alte Host-Schlüssel entfernen** (WSL) – die neuen VMs haben neue Schlüssel unter denselben IPs, und
+**2. Zugang** (WSL, Repo-Root) – die neuen VMs haben neue Host-Schlüssel unter denselben IPs, und
 `StrictHostKeyChecking=accept-new` lehnt geänderte Schlüssel ab:
 
 ```bash
 for ip in 192.168.250.11 192.168.250.12 192.168.250.13 192.168.250.20; do ssh-keygen -R "$ip"; done
-```
-
-**3. Zertifikat** (falls abgelaufen) und warten, bis cloud-init fertig ist (1–2 Minuten nach dem `apply`):
-
-```bash
-cd /mnt/c/<pfad-zum-repo>
 eval "$(ssh-agent -s)" && bash ssh/sign-cert.sh -a
 INV=ansible/inventory/hosts.yml
-ansible -i $INV all -m ping
+sleep 120                    # cloud-init braucht nach dem apply 1–2 Minuten
+ansible -i $INV all -m ping  # alle 4 SUCCESS
 ```
 
-**4. Cluster aufbauen – Reihenfolge beachten:**
+**3. Knoten und Cluster** (WSL) – Reihenfolge beachten:
 
 ```bash
 ansible-playbook -i $INV ansible/nfs-server.yml
@@ -1328,6 +1326,17 @@ ansible-playbook -i $INV ansible/kubernetes.yml
 ansible-playbook -i $INV ansible/control-plane.yml
 bash platform/cilium/install.sh                     # inkl. IP-Pool
 ansible-playbook -i $INV ansible/workers.yml
+kubectl get nodes                                   # 3 Knoten Ready
+```
+
+Cilium kommt **vor** `workers.yml`: Ohne CNI wird kein Knoten `Ready`, und `workers.yml` wartet genau darauf.
+Hubble Relay und UI bleiben bis zum Join der Worker `Pending`, weil die Control Plane per Taint für sie gesperrt
+ist; danach starten sie von selbst. `control-plane.yml` überschreibt `~/.kube/k8s-lab.conf` mit der kubeconfig
+des neuen Clusters.
+
+**4. Plattform und Produkt** (WSL):
+
+```bash
 bash platform/envoy-gateway/install.sh
 kubectl apply -f platform/gateway/gateway.yaml
 bash platform/rabbitmq/install.sh
@@ -1335,25 +1344,37 @@ bash platform/nfs-csi/install.sh
 bash platform/mongodb/install.sh
 bash platform/argocd/install.sh
 kubectl apply -f platform/argocd/apps/shop.yaml
-kubectl get nodes -o wide
 ```
-
-Die Route auf dem Windows-Host (`route -p`) und die Hosts-Datei bleiben über den Neuaufbau hinweg bestehen,
-solange sich die IPs nicht ändern. Bei Variante B (alles abbauen) zeigt die Route zwischenzeitlich ins Leere;
-das ist unschädlich.
-
-Cilium kommt **vor** `workers.yml`: Ohne CNI wird kein Knoten `Ready`, und `workers.yml` wartet genau darauf.
-Hubble Relay und UI bleiben bis zum Join der Worker `Pending`, weil die Control Plane per Taint für sie gesperrt
-ist; danach starten sie von selbst. Ein Entfernen des Taints wie in Schritt 14 ist mit Workern nicht nötig.
-
-`control-plane.yml` überschreibt `~/.kube/k8s-lab.conf` mit der kubeconfig des neuen Clusters.
 
 **5. Prüfen**
 
 ```bash
-kubectl get nodes                           # 3 Knoten Ready
-kubectl get pods -A                         # alles Running
+kubectl get pods -A | grep -v -E "Running|Completed"     # nur die Kopfzeile
+kubectl -n gateway get gateway lab                       # 192.168.250.200, PROGRAMMED True
+kubectl -n argocd get application shop                   # Synced, Healthy
+curl -s http://shop.k8s-lab/api/catalog/WeatherForecast  # JSON
 ```
+
+Dazu im Browser `http://rabbitmq.k8s-lab` und `http://argocd.k8s-lab`. **Alle Passwörter sind neu:**
+
+```bash
+# RabbitMQ Management-UI (Benutzer admin)
+kubectl -n rabbitmq get secret rabbitmq -o jsonpath='{.data.password}' | base64 -d; echo
+
+# Argo CD (Benutzer admin)
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+
+# MongoDB-Administrator (Benutzer root), nur für Verwaltung
+kubectl -n mongodb get secret mongodb -o jsonpath='{.data.root-password}' | base64 -d; echo
+
+# Zugänge der Dienste (je Dienst ein Secret im Namespace shop)
+kubectl -n shop get secrets -l app.kubernetes.io/component=client-credentials
+kubectl -n shop get secret rabbitmq-catalog-api -o jsonpath='{.data.password}' | base64 -d; echo
+kubectl -n shop get secret mongodb-catalog-api -o jsonpath='{.data.connection-string}' | base64 -d; echo
+```
+
+Die Route auf dem Windows-Host (`route -p`) und die Hosts-Datei bleiben über den Neuaufbau hinweg bestehen,
+solange sich die IPs nicht ändern. Bei Variante B zeigt die Route zwischenzeitlich ins Leere; das ist unschädlich.
 
 ## Eigenheiten des Hyper-V-Providers
 
@@ -1458,7 +1479,9 @@ das Internet, aber auch das Netz, in dem der Host hängt (z. B. ein Firmennetz).
 - [ ] RabbitMQ als Cluster mit 3 Knoten: Volumes aus `standard`, `worker-3`, Chart auf StatefulSet mit Peer Discovery, Erlang-Cookie, Anti-Affinity, PodDisruptionBudget
 - [ ] Argo CD (Schritt 20); Produkt `shop` über Argo CD (Schritt 21), erster Dienst `catalogservice`; weitere Dienste (orders, Frontend) folgen
 - [ ] Argo CD: Plattform-Komponenten übernehmen (vorher Passwörter ohne `lookup` lösen – Argo CD rendert Charts ohne Cluster-Zugriff, `lookup` liefert dort nichts); App-of-Apps statt einzelner `kubectl apply`
-- [ ] Neuaufbau in einem Durchgang testen; dabei neue VM-Namen
+- [x] Neuaufbau in einem Durchgang getestet (Variante B, alle Schritte laut *Cluster neu aufbauen*)
+- [ ] Neue VM-Namen
+- [ ] Optional: App of Apps, damit nach Argo CD keine Application mehr von Hand angelegt werden muss
 - [ ] catalogservice: Health-Endpunkt `/healthz` (dann `probe.type: http`), `UseHttpsRedirection` nur in Development, Routen mit gemeinsamem Präfix
 - [x] NFS-Server `nfs-1`, NFS-CSI-Treiber, StorageClass `standard` und MongoDB 8.3 als Replica Set mit einem Mitglied (Schritt 19)
 - [ ] catalog-api: Produkte in MongoDB statt In-Memory
