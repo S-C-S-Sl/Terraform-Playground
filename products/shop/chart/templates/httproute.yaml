@@ -1,5 +1,7 @@
 # Eine Route für das Produkt: je Dienst eine Regel nach Pfad. Der Präfix wird vor der
-# Weiterleitung entfernt, der Dienst sieht seine eigenen Pfade (/api/catalog/x -> /x).
+# Weiterleitung entfernt, der Dienst sieht seine eigenen Pfade (/api/catalog/x -> /x) und
+# erfährt den Präfix über X-Forwarded-Prefix.
+# Übergang: Später übernimmt ein nginx im Produkt das Routing, dann geht hier alles an nginx.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -26,6 +28,12 @@ spec:
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
+        # Der Dienst kennt seinen äußeren Pfad nicht; so erzeugt er trotzdem korrekte Links
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Prefix
+                value: {{ $svc.pathPrefix }}
       backendRefs:
         - name: {{ $name }}
           port: 80

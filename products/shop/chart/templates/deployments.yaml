@@ -23,13 +23,22 @@ spec:
           ports:
             - name: http
               containerPort: {{ $svc.port }}
+          env:
+            # ASP.NET: X-Forwarded-* nur von Proxys aus diesen Netzen auswerten
+            {{- range $i, $net := $.Values.trustedProxyNetworks }}
+            - name: {{ printf "ForwardedHeaders__KnownNetworks__%d" $i }}
+              value: {{ $net | quote }}
+            {{- end }}
+          {{- $probes := $svc.probes | default dict }}
           readinessProbe:
-            {{- include "shop.probe" $ctx | nindent 12 }}
+            {{- include "shop.probe" (dict "path" $probes.readiness) | nindent 12 }}
             periodSeconds: 5
+            failureThreshold: 3
           livenessProbe:
-            {{- include "shop.probe" $ctx | nindent 12 }}
+            {{- include "shop.probe" (dict "path" $probes.liveness) | nindent 12 }}
             initialDelaySeconds: 10
             periodSeconds: 15
+            failureThreshold: 3
           resources:
             {{- toYaml $svc.resources | nindent 12 }}
 {{- end }}

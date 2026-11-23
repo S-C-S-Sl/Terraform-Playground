@@ -1151,14 +1151,27 @@ Version per GitVersion, Registry ghcr.io). Hier liegt nur das **Helm-Chart des P
 
 | Datei | Inhalt |
 |---|---|
-| `values.yaml` | Hostname (`shop.k8s-lab`), Gateway, `services`: je Dienst Image, Tag, Port, Pfad, Probe, Ressourcen |
+| `values.yaml` | Hostname (`shop.k8s-lab`), Gateway, vertrauenswürdiges Pod-Netz, `services`: je Dienst Image, Tag, Port, Pfad, Probes, Ressourcen |
 | `templates/deployments.yaml`, `templates/services.yaml` | je Dienst ein Deployment und ein ClusterIP-Service |
-| `templates/httproute.yaml` | eine Route für das Produkt, je Dienst eine Regel nach Pfad; der Präfix wird entfernt (`/api/catalog/x` → `/x`) |
+| `templates/httproute.yaml` | eine Route für das Produkt, je Dienst eine Regel nach Pfad; der Präfix wird entfernt (`/api/catalog/x` → `/x`) und per `X-Forwarded-Prefix` gemeldet |
 | `platform/argocd/apps/shop.yaml` | Application: Quelle `products/shop/chart` im Branch `develop`, Ziel Namespace `shop`, automatischer Abgleich |
 
-Derzeitiger Dienst: `catalogservice` (Repo `sschabbach-mse/CatalogService`), Image
-`ghcr.io/sschabbach-mse/catalogservice:0.1.0-create-api.1`, erreichbar unter `http://shop.k8s-lab/api/catalog/`.
-Er hat noch keinen Health-Endpunkt; die Probes prüfen deshalb nur den Port (`probe.type: tcp`).
+Derzeitiger Dienst: `catalogservice` (Repo `sschabbach-mse/CatalogService`), erreichbar unter
+`http://shop.k8s-lab/api/catalog/`:
+
+| Von außen | Im Dienst |
+|---|---|
+| `/api/catalog/v1/products`, `/api/catalog/v1/products/{id}` | `/v1/products…` (Asp.Versioning) |
+| `/api/catalog/openapi/v1.json` | `/openapi/v1.json` |
+| – (nur im Cluster) | `/health/live` (Liveness-Probe), `/health/ready` (Readiness-Probe) |
+
+**Zusammenspiel Gateway ↔ Dienst:** Das Gateway entfernt `/api/catalog` und setzt `X-Forwarded-Prefix: /api/catalog`.
+Der Dienst wertet `X-Forwarded-*` nur von Proxys aus dem Pod-Netz aus (`trustedProxyNetworks` →
+Umgebungsvariable `ForwardedHeaders__KnownNetworks__0=10.244.0.0/16`); so enthält z. B. der `Location`-Header nach
+`POST` den vollständigen äußeren Pfad. Ohne den Eintrag ignoriert ASP.NET die Header stillschweigend.
+
+**Probes:** `probes.liveness`/`probes.readiness` je Dienst (HTTP-Pfade). Ohne `probes` prüft Kubernetes nur, ob der
+Port offen ist.
 
 **Voraussetzungen**
 

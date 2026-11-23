@@ -7,19 +7,31 @@ gateway:
   name: lab
   namespace: gateway
 
+# Pod-Netz des Clusters (kubeadm podSubnet): Proxys darin (Envoy des Gateways, später nginx)
+# gelten für die Dienste als vertrauenswürdig - nur dann werten sie X-Forwarded-* aus.
+trustedProxyNetworks:
+  - 10.244.0.0/16
+
 # Dienste des Produkts. Für jeden Eintrag entstehen Deployment, Service und eine Regel in der
-# HTTPRoute. Das Gateway entfernt pathPrefix vor der Weiterleitung (/api/catalog/x -> /x).
+# HTTPRoute. Das Gateway entfernt pathPrefix vor der Weiterleitung (/api/catalog/x -> /x) und
+# meldet ihn dem Dienst per X-Forwarded-Prefix (für Links wie den Location-Header).
 services:
   catalogservice:
     image: ghcr.io/sschabbach-mse/catalogservice
-    tag: "0.1.0-create-api.1"     # GitVersion-Version aus dem CI des Dienstes
-    replicas: 1
+    tag: "0.1.0-create-api.9"     # GitVersion-Version aus dem CI des Dienstes (eindeutig je Commit)
+    # Das Deployment legt dafür ein ReplicaSet mit dieser Anzahl Pods an.
+    # ACHTUNG, solange der Dienst Daten nur im Speicher hält (InMemoryProductInteractor):
+    # jeder Pod hat eigene Daten - ein Produkt, das ein Pod angelegt hat, kennen die anderen nicht.
+    replicas: 3
     port: 8080                    # Kestrel im ASP.NET-Image
     pathPrefix: /api/catalog
-    # Noch kein Health-Endpunkt im Dienst: Probes prüfen nur, ob der Port offen ist.
-    # Später: probe: { type: http, path: /healthz }
-    probe:
-      type: tcp
+    # Health-Endpunkte des Dienstes (nur im Cluster erreichbar, nicht über das Gateway):
+    #   liveness  - lebt der Prozess? Scheitert sie, startet Kubernetes den Container neu
+    #   readiness - kann er Anfragen bedienen? Scheitert sie, bekommt der Pod keinen Verkehr
+    # Ohne "probes" prüft Kubernetes nur, ob der Port offen ist.
+    probes:
+      liveness: /health/live
+      readiness: /health/ready
     resources:
       requests:
         cpu: 50m

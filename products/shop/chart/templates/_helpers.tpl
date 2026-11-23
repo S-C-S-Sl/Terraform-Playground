@@ -12,11 +12,11 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 app.kubernetes.io/name: {{ .name }}
 {{- end -}}
 
-{{/* readinessProbe/livenessProbe-Inhalt je nach probe.type */}}
+{{/* Probe-Ziel: HTTP-Pfad, wenn angegeben, sonst nur TCP auf den Port. Aufruf mit (dict "path" <pfad oder leer>) */}}
 {{- define "shop.probe" -}}
-{{- if eq .svc.probe.type "http" -}}
+{{- if .path -}}
 httpGet:
-  path: {{ .svc.probe.path }}
+  path: {{ .path }}
   port: http
 {{- else -}}
 tcpSocket:
