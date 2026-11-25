@@ -11,7 +11,7 @@ storageClass:
   # zeigt eine StorageClass gleichen Namens auf einen anderen Speicher - die Charts bleiben gleich.
   name: standard
   parameters:
-    server: 192.168.250.20          # nfs-1, siehe terraform/nodes.tf
+    server: 192.168.250.20          # nfs-1, siehe terraform/hyper-v/nodes.tf
     share: /srv/nfs/k8s             # Freigabe, siehe ansible/roles/nfs_server/defaults/main.yml
     # Beim Löschen eines PVC bleibt das Verzeichnis auf dem NFS-Server erhalten (bewusstes Aufräumen)
     onDelete: retain

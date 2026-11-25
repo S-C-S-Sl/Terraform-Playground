@@ -23,9 +23,9 @@ locals {
 }
 
 resource "local_file" "ansible_inventory" {
-  filename        = "${path.module}/../ansible/inventory/hosts.yml"
+  filename        = "${path.module}/../../ansible/inventory/hosts.yml"
   file_permission = "0644"
-  content         = "# Generiert von terraform/inventory.tf - nicht von Hand bearbeiten.\n${yamlencode(local.ansible_inventory)}"
+  content         = "# Generiert von terraform/hyper-v/inventory.tf - nicht von Hand bearbeiten.\n${yamlencode(local.ansible_inventory)}"
 
   lifecycle {
     precondition {

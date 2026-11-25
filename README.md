@@ -69,17 +69,18 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 │   └── inventory/
 │       ├── hosts.yml             # von Terraform erzeugt, nicht eingecheckt
 │       └── group_vars/all.yml    # Verbindung: Benutzer, Schlüssel, SSH-Optionen
-└── terraform/                    # Lab-Ressourcen
-    ├── versions.tf
-    ├── providers.tf
-    ├── variables.tf
-    ├── network.tf                # internal Switch + NAT
-    ├── nodes.tf                  # VMs (local.nodes: Rolle, IP, CPU, RAM) + Disk, cloud-init-ISO, VM
-    ├── inventory.tf              # erzeugt ansible/inventory/hosts.yml aus nodes
-    ├── outputs.tf
-    ├── templates/                # cloud-init: user-data, network-config, meta-data
-    ├── terraform.tfvars.example  # Vorlage für terraform.tfvars (nicht eingecheckt)
-    └── .terraform.lock.hcl       # Provider-Version, gehört ins Repo
+└── terraform/                    # Infrastruktur, je Plattform ein Unterordner (später z. B. azure/)
+    └── hyper-v/                  # lokal auf Hyper-V
+        ├── versions.tf
+        ├── providers.tf
+        ├── variables.tf
+        ├── network.tf                # internal Switch + NAT
+        ├── nodes.tf                  # VMs (local.nodes: Rolle, IP, CPU, RAM) + Disk, cloud-init-ISO, VM
+        ├── inventory.tf              # erzeugt ansible/inventory/hosts.yml aus nodes
+        ├── outputs.tf
+        ├── templates/                # cloud-init: user-data, network-config, meta-data
+        ├── terraform.tfvars.example  # Vorlage für terraform.tfvars (nicht eingecheckt)
+        └── .terraform.lock.hcl       # Provider-Version, gehört ins Repo
 ```
 
 | Ordner | Läuft wo | Zweck |
@@ -92,7 +93,7 @@ später Konfiguration mit **Ansible** und Cluster-Inhalte mit **Helm**.
 | `tools/` | WSL, Bash | Werkzeuge der Arbeitsumgebung installieren |
 | `examples/` | WSL (kubectl) | Beispielanwendungen zum Testen (`examples/demo` im Namespace `demo`) |
 | `products/` | WSL (Helm) | Helm-Charts der Produkte; der Quellcode der Dienste liegt in eigenen Repos (siehe unten) |
-| `terraform/` | Windows, Admin-PowerShell | Netz und VMs |
+| `terraform/hyper-v/` | Windows, Admin-PowerShell | Netz und VMs auf Hyper-V |
 
 **Trennung von Infrastruktur und Anwendungen**: Dieses Repo beschreibt die Plattform (VMs, Cluster,
 gemeinsame Infrastruktur) und enthält die **Helm-Charts** der Produkte. Der **Quellcode** der Dienste
@@ -338,7 +339,7 @@ Die Zugangsdaten werden nicht gespeichert und verschwinden mit dem Schließen de
 ### 6. Variablen festlegen (einmalig)
 
 ```powershell
-Copy-Item terraform\terraform.tfvars.example terraform\terraform.tfvars
+Copy-Item terraform\hyper-v\terraform.tfvars.example terraform\hyper-v\terraform.tfvars
 ```
 
 `terraform.tfvars` ist per `.gitignore` ausgeschlossen. Das Repo ist öffentlich, interne Adressen und
@@ -352,7 +353,7 @@ Hashes gehören deshalb nur in diese Datei.
 | `vm_root` | nein | Standard `D:\Hyper-V\VMs`, pro VM ein Unterordner |
 | `console_password_hash` | nein | Notfall-Login an der Hyper-V-Konsole, siehe unten |
 
-Die VMs selbst stehen in `terraform/nodes.tf` im Block `locals`:
+Die VMs selbst stehen in `terraform/hyper-v/nodes.tf` im Block `locals`:
 
 ```hcl
 nodes = {
@@ -386,7 +387,7 @@ console_password_hash = "$6$..."
 ```
 
 - SSH-Login per Passwort bleibt abgeschaltet (`ssh_pwauth: false`), das Passwort gilt nur an der Konsole.
-- Der Hash landet in der Seed-ISO, in `terraform/.build/` und im State. Nur ein eigenes Lab-Passwort verwenden.
+- Der Hash landet in der Seed-ISO, in `terraform/hyper-v/.build/` und im State. Nur ein eigenes Lab-Passwort verwenden.
 - Sobald der Zugang per Zertifikat zuverlässig funktioniert, die Zeile wieder entfernen.
   Der Benutzer ist dann für Passwort-Logins gesperrt.
 
@@ -401,7 +402,7 @@ sudo journalctl -u ssh
 ### 7. Terraform ausführen (Admin-PowerShell)
 
 ```powershell
-cd terraform
+cd terraform\hyper-v
 terraform init
 terraform plan
 terraform apply
@@ -446,7 +447,7 @@ Die gesamte Konfiguration ist YAML, eine `ansible.cfg` (INI-Format) gibt es bewu
 
 | Datei | Inhalt |
 |---|---|
-| `inventory/hosts.yml` | Hosts und Gruppen, erzeugt von Terraform (`terraform/inventory.tf`) aus `local.nodes` in `nodes.tf` |
+| `inventory/hosts.yml` | Hosts und Gruppen, erzeugt von Terraform (`terraform/hyper-v/inventory.tf`) aus `local.nodes` in `nodes.tf` |
 | `inventory/group_vars/all.yml` | Verbindung für alle VMs: Benutzer `ubuntu`, Schlüssel `~/.ssh/id_ed25519_k8s_lab`, SSH-Optionen |
 
 - `group_vars/` neben dem Inventory lädt Ansible automatisch.
@@ -699,7 +700,7 @@ Grund (z. B. eine Network Policy) sind später der wichtigste Einstieg in die Fe
 
 ### 16. Worker-Knoten (PowerShell + WSL)
 
-**1. VMs anlegen** – in `terraform/nodes.tf` die Worker in `local.nodes` eintragen bzw. einkommentieren:
+**1. VMs anlegen** – in `terraform/hyper-v/nodes.tf` die Worker in `local.nodes` eintragen bzw. einkommentieren:
 
 ```hcl
 nodes = {
@@ -793,7 +794,7 @@ bash platform/cilium/install.sh
 kubectl get ciliumloadbalancerippools          # lab-pool, IPS AVAILABLE 8
 ```
 
-Die Adressen `192.168.250.200`–`207` dürfen keiner VM in `terraform/nodes.tf` zugewiesen werden.
+Die Adressen `192.168.250.200`–`207` dürfen keiner VM in `terraform/hyper-v/nodes.tf` zugewiesen werden.
 
 **2. Route** (Admin-PowerShell, einmalig, `-p` = bleibt nach Neustarts erhalten):
 
@@ -985,7 +986,7 @@ Pod (beliebiger Knoten) ─ PVC data-mongodb-0 (StorageClass standard)
         nfs-1 (192.168.250.20): Daten-Disk (XFS) unter /srv/nfs, Freigabe /srv/nfs/k8s
 ```
 
-**1. NFS-Server-VM** – in `terraform/nodes.tf`:
+**1. NFS-Server-VM** – in `terraform/hyper-v/nodes.tf`:
 
 ```hcl
 nfs-1 = { role = "nfs", ip = "192.168.250.20", cpus = 1, memory_gb = 1 },
@@ -1283,7 +1284,7 @@ Die Images der Dienste liegen auf ghcr.io und sind nicht betroffen.
 
 Switch und NAT bleiben stehen, keine Admin-Rechte nötig.
 
-**Abbauen** (PowerShell, Ordner `terraform`):
+**Abbauen** (PowerShell, Ordner `terraform\hyper-v`):
 
 ```powershell
 terraform destroy -target='hyperv_machine_instance.node' -target='hyperv_vhd.os' -target='hyperv_iso_image.cidata'
@@ -1297,7 +1298,7 @@ Terraform warnt bei `-target`, dass nur ein Teil abgebaut wird. Das ist hier gew
 
 ### Variante B: alles inklusive Netzwerk
 
-**Abbauen** (Admin-PowerShell, Ordner `terraform`, wegen des NAT-Skripts):
+**Abbauen** (Admin-PowerShell, Ordner `terraform\hyper-v`, wegen des NAT-Skripts):
 
 ```powershell
 terraform destroy
@@ -1311,7 +1312,7 @@ Hosts-Datei entfernen.
 
 Bei Fehlern an der Stelle anhalten – jeder Schritt setzt den vorherigen voraus.
 
-**1. Infrastruktur** (PowerShell, Ordner `terraform`; bei Variante B als **Admin**, weil das NAT-Skript läuft):
+**1. Infrastruktur** (PowerShell, Ordner `terraform\hyper-v`; bei Variante B als **Admin**, weil das NAT-Skript läuft):
 
 ```powershell
 ..\host\Terraform-SetUserEnv.ps1

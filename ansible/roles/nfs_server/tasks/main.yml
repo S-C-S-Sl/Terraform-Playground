@@ -19,7 +19,7 @@
 
 - name: Abbrechen, wenn die Daten-Disk fehlt
   ansible.builtin.fail:
-    msg: "{{ nfs_data_device }} fehlt. Ist in terraform/nodes.tf eine Daten-Disk für {{ inventory_hostname }} eingetragen?"
+    msg: "{{ nfs_data_device }} fehlt. Ist in terraform/hyper-v/nodes.tf eine Daten-Disk für {{ inventory_hostname }} eingetragen?"
   when: not nfs_device.stat.exists
 
 # Schutz vor dem Formatieren der falschen Disk: Die Daten-Disk darf keine Partitionen

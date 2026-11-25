@@ -14,5 +14,5 @@ images/
 
 .idea/**
 
-terraform/.build/
+terraform/**/.build/
 ansible/inventory/hosts.yml

@@ -15,7 +15,7 @@ locals {
 }
 
 resource "terraform_data" "lab_nat" {
-  input            = merge(local.lab_net, { scripts_dir = "${path.module}/../host" })
+  input            = merge(local.lab_net, { scripts_dir = "${path.module}/../../host" })
   triggers_replace = local.lab_net
 
   provisioner "local-exec" {

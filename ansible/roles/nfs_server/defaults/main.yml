@@ -1,4 +1,4 @@
-# Daten-Disk aus terraform/nodes.tf (local.data_disks), in der VM /dev/sdb
+# Daten-Disk aus terraform/hyper-v/nodes.tf (local.data_disks), in der VM /dev/sdb
 nfs_data_device: /dev/sdb
 # XFS: von MongoDB für Datenbankdateien empfohlen
 nfs_data_fstype: xfs
