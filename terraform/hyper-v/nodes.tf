@@ -12,7 +12,8 @@ locals {
     nfs-1 = 50
   }
 
-  # Hyper-V-Name und Ordner einer VM: Prefix + Key. Hostname und Inventory nutzen weiter den Key.
+  # Name einer VM: Prefix + Key. Gilt für Hyper-V-Name, Ordner, Hostname (= Knotenname im Cluster)
+  # und Ansible-Inventory. Der Key selbst bleibt der Schlüssel in local.nodes und local.data_disks.
   vm_names = { for key, node in local.nodes : key => "${var.resource_prefix}${key}" }
 
   lab_prefix_length = local.lab_net.prefix_length
@@ -29,14 +30,14 @@ data "archive_file" "cidata" {
   source {
     filename = "meta-data"
     content = templatefile("${path.module}/templates/meta-data.yaml.tftpl", {
-      hostname = each.key
+      hostname = local.vm_names[each.key]
     })
   }
 
   source {
     filename = "user-data"
     content = templatefile("${path.module}/templates/user-data.yaml.tftpl", {
-      hostname              = each.key
+      hostname              = local.vm_names[each.key]
       ssh_ca_public_key     = trimspace(var.ssh_user_ca_public_key)
       console_password_hash = var.console_password_hash
     })
