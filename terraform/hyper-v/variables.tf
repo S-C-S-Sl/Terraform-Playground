@@ -8,6 +8,18 @@ variable "hyperv_password" {
   sensitive = true
 }
 
+# --- Namen --------------------------------------------------------------------
+variable "resource_prefix" {
+  type        = string
+  description = "Optionales Prefix für die Hyper-V-Resourcen (VM-Namen, VM-Ordner, Switch, NAT). Hostnamen und Ansible-Inventory bleiben unverändert."
+  default     = ""
+
+  validation {
+    condition     = var.resource_prefix == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9-]*$", var.resource_prefix))
+    error_message = "resource_prefix darf nur Buchstaben, Ziffern und Bindestriche enthalten und nicht mit einem Bindestrich beginnen."
+  }
+}
+
 # --- Ablage -----------------------------------------------------------------
 variable "base_image_path" {
   type        = string

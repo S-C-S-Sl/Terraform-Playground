@@ -1,5 +1,5 @@
 resource "hyperv_network_switch" "lab" {
-  name        = "k8s-lab"
+  name        = "${var.resource_prefix}k8s-lab"
   switch_type = "Internal"
   notes       = "Kubernetes Lab - verwaltet durch Terraform"
 }
@@ -10,7 +10,7 @@ locals {
     gateway_ip    = "192.168.250.1"
     prefix_length = 24
     nat_prefix    = "192.168.250.0/24"
-    nat_name      = "k8s-lab-nat"
+    nat_name      = "${var.resource_prefix}k8s-lab-nat"
   }
 }
 
