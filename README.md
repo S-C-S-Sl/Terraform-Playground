@@ -1177,8 +1177,12 @@ Port offen ist.
 **Voraussetzungen**
 
 - Das Chart ist nach `develop` **gepusht** – Argo CD liest aus GitHub, nicht aus dem lokalen Arbeitsverzeichnis.
-- Das Paket auf ghcr.io ist öffentlich (GitHub → *Packages* → `catalogservice` → *Package settings* →
-  *Change visibility*). Prüfen auf einem Knoten: `sudo crictl pull ghcr.io/s-c-s-sl/catalogservice:0.1.0-alpha.2`.
+- Das Paket auf ghcr.io ist **privat**. Der Cluster holt es mit dem Pull-Secret `ghcr-pull` im Namespace `shop`
+  (`imagePullSecrets` im Chart). Das Secret enthält Zugangsdaten und liegt deshalb nicht im Repo, sondern wird
+  vorab angelegt: `bash platform/registry/ghcr-pull-secret.sh` (fragt GitHub-Benutzer und ein Token mit dem
+  Recht `read:packages` ab; alternativ `GHCR_USER`/`GHCR_TOKEN` setzen). Das Aufbau-Skript ruft es vor der
+  Application `shop` auf. Prüfen: `kubectl -n shop get secret ghcr-pull`; bei `ImagePullBackOff` zeigt
+  `kubectl -n shop describe pod` den Grund.
 - War `shop` vorher per Helm installiert: `helm -n shop uninstall shop` (keine Übernahme).
 
 ```bash

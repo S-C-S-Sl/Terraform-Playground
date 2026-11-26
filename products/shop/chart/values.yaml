@@ -7,6 +7,11 @@ gateway:
   name: lab
   namespace: gateway
 
+# Pull-Secret für die private Registry ghcr.io. Das Secret liegt nicht im Chart (keine Zugangsdaten
+# im Repo), sondern wird vorab angelegt: bash platform/registry/ghcr-pull-secret.sh
+imagePullSecrets:
+  - name: ghcr-pull
+
 # Pod-Netz des Clusters (kubeadm podSubnet): Proxys darin (Envoy des Gateways, später nginx)
 # gelten für die Dienste als vertrauenswürdig - nur dann werten sie X-Forwarded-* aus.
 trustedProxyNetworks:
