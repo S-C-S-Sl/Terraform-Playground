@@ -3,6 +3,9 @@
 # base_image_path = "D:\\Hyper-V\\images\\ubuntu-2404-base.vhdx"
 # vm_root         = "D:\\Hyper-V\\VMs"
 
+# Optional: Prefix für VM-Namen, VM-Ordner, Switch und NAT (z. B. "dev-"); Standard: keines
+# resource_prefix = ""
+
 # DNS-Server des Hosts: Get-DnsClientServerAddress -AddressFamily IPv4
 dns_servers = ["192.0.2.10", "192.0.2.11"]
 

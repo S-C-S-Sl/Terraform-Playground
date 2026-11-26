@@ -12,6 +12,9 @@ locals {
     nfs-1 = 50
   }
 
+  # Hyper-V-Name und Ordner einer VM: Prefix + Key. Hostname und Inventory nutzen weiter den Key.
+  vm_names = { for key, node in local.nodes : key => "${var.resource_prefix}${key}" }
+
   lab_prefix_length = local.lab_net.prefix_length
   lab_gateway       = local.lab_net.gateway_ip
 }
@@ -53,7 +56,7 @@ data "archive_file" "cidata" {
 # --- OS-Disk: Differencing-Disk auf dem Basis-Image -------------------------
 resource "hyperv_vhd" "os" {
   for_each    = local.nodes
-  path        = "${var.vm_root}\\${each.key}\\os.vhdx"
+  path        = "${var.vm_root}\\${local.vm_names[each.key]}\\os.vhdx"
   parent_path = var.base_image_path
   vhd_type    = "Differencing" # Pflicht, sonst legt der Provider eine leere Disk an (Doku ist hier falsch)
 }
@@ -61,7 +64,7 @@ resource "hyperv_vhd" "os" {
 # --- Daten-Disk (dynamisch wachsend, leer; Ansible legt das Dateisystem an) ---
 resource "hyperv_vhd" "data" {
   for_each = local.data_disks
-  path     = "${var.vm_root}\\${each.key}\\data.vhdx"
+  path     = "${var.vm_root}\\${local.vm_names[each.key]}\\data.vhdx"
   vhd_type = "Dynamic"
   size     = each.value * 1024 * 1024 * 1024
 
@@ -73,7 +76,7 @@ resource "hyperv_iso_image" "cidata" {
   volume_name               = "CIDATA"
   source_zip_file_path      = data.archive_file.cidata[each.key].output_path
   source_zip_file_path_hash = data.archive_file.cidata[each.key].output_sha
-  destination_iso_file_path = "${var.vm_root}\\${each.key}\\cidata.iso"
+  destination_iso_file_path = "${var.vm_root}\\${local.vm_names[each.key]}\\cidata.iso"
   iso_file_system_type      = "iso9660|joliet"
 
   depends_on = [hyperv_vhd.os] # legt den VM-Ordner an
@@ -83,7 +86,7 @@ resource "hyperv_iso_image" "cidata" {
 resource "hyperv_machine_instance" "node" {
   for_each = local.nodes
 
-  name       = each.key
+  name       = local.vm_names[each.key]
   path       = var.vm_root
   generation = 2
   notes      = "k8s-lab - verwaltet durch Terraform"

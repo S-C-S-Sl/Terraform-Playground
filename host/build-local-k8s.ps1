@@ -17,6 +17,11 @@
 .PARAMETER NoConfirm
     Ohne Rückfragen durchlaufen (Terraform fragt bei apply/destroy trotzdem selbst nach).
 
+.PARAMETER Prefix
+    Optionales Prefix für die Hyper-V-Resourcen (VM-Namen, VM-Ordner, Switch, NAT), z. B. "dev-".
+    Wird als TF_VAR_resource_prefix an Terraform gegeben. Für "down" dasselbe Prefix wie beim Aufbau angeben.
+    Ohne Angabe gilt ein bereits gesetztes TF_VAR_resource_prefix bzw. terraform.tfvars.
+
 .PARAMETER Distro
     WSL-Distribution mit Ansible, kubectl, Helm und den SSH-Schlüsseln.
 
@@ -24,6 +29,7 @@
     .\host\build-local-k8s.ps1                 # aufbauen, mit Rückfrage nach jedem Schritt
     .\host\build-local-k8s.ps1 -From 5         # ab Schritt 5 fortsetzen
     .\host\build-local-k8s.ps1 down            # abbauen
+    .\host\build-local-k8s.ps1 -Prefix dev-    # Resourcen heißen dev-cp-1, dev-k8s-lab usw.
 #>
 [CmdletBinding()]
 param(
@@ -31,12 +37,16 @@ param(
     [string]$Action = 'up',
     [int]$From = 1,
     [switch]$NoConfirm,
+    [string]$Prefix,
     [string]$Distro = 'Ubuntu-24.04'
 )
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $TerraformDir = Join-Path $RepoRoot 'terraform\hyper-v'
+
+# Prefix für die Hyper-V-Resourcen an Terraform durchreichen (gilt für alle terraform-Aufrufe, auch destroy)
+if ($PSBoundParameters.ContainsKey('Prefix')) { $env:TF_VAR_resource_prefix = $Prefix }
 
 # --- Hilfsfunktionen -----------------------------------------------------------------------
 
@@ -128,6 +138,7 @@ function Test-Prerequisites {
     Write-Host "Repo: $RepoRoot"
     Write-Host "WSL:  $Distro"
     Write-Host "Hyper-V-Benutzer: $env:TF_VAR_hyperv_user"
+    if ($env:TF_VAR_resource_prefix) { Write-Host "Resource-Prefix: $env:TF_VAR_resource_prefix" }
 }
 
 # --- Aufbau -----------------------------------------------------------------------------------
