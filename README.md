@@ -1099,7 +1099,7 @@ kubectl -n mongodb exec mongodb-0 -- bash -c \
 
 ```yaml
 env:
-  - name: ConnectionStrings__MongoDb
+  - name: MongoDb__ConnectionString   # so liest ihn der catalogservice (Pflicht)
     valueFrom:
       secretKeyRef:
         name: mongodb-catalog-api
@@ -1157,7 +1157,7 @@ Version per GitVersion, Registry ghcr.io). Hier liegt nur das **Helm-Chart des P
 | `templates/httproute.yaml` | eine Route für das Produkt, je Dienst eine Regel nach Pfad; der Präfix wird entfernt (`/api/catalog/x` → `/x`) und per `X-Forwarded-Prefix` gemeldet |
 | `platform/argocd/apps/shop.yaml` | Application: Quelle `products/shop/chart` im Branch `develop`, Ziel Namespace `shop`, automatischer Abgleich |
 
-Derzeitiger Dienst: `catalogservice` (Repo `sschabbach-mse/CatalogService`), erreichbar unter
+Derzeitiger Dienst: `catalogservice` (Repo `S-C-S-Sl/CatalogService`), erreichbar unter
 `http://shop.k8s-lab/api/catalog/`:
 
 | Von außen | Im Dienst |
@@ -1177,8 +1177,12 @@ Port offen ist.
 **Voraussetzungen**
 
 - Das Chart ist nach `develop` **gepusht** – Argo CD liest aus GitHub, nicht aus dem lokalen Arbeitsverzeichnis.
-- Das Paket auf ghcr.io ist öffentlich (GitHub → *Packages* → `catalogservice` → *Package settings* →
-  *Change visibility*). Prüfen auf einem Knoten: `sudo crictl pull ghcr.io/sschabbach-mse/catalogservice:0.1.0-create-api.1`.
+- Das Paket auf ghcr.io ist **privat**. Der Cluster holt es mit dem Pull-Secret `ghcr-pull` im Namespace `shop`
+  (`imagePullSecrets` im Chart). Das Secret enthält Zugangsdaten und liegt deshalb nicht im Repo, sondern wird
+  vorab angelegt: `bash platform/registry/ghcr-pull-secret.sh` (fragt GitHub-Benutzer und ein Token mit dem
+  Recht `read:packages` ab; alternativ `GHCR_USER`/`GHCR_TOKEN` setzen). Das Aufbau-Skript ruft es vor der
+  Application `shop` auf. Prüfen: `kubectl -n shop get secret ghcr-pull`; bei `ImagePullBackOff` zeigt
+  `kubectl -n shop describe pod` den Grund.
 - War `shop` vorher per Helm installiert: `helm -n shop uninstall shop` (keine Übernahme).
 
 ```bash

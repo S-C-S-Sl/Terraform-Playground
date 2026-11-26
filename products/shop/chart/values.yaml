@@ -7,6 +7,11 @@ gateway:
   name: lab
   namespace: gateway
 
+# Pull-Secret für die private Registry ghcr.io. Das Secret liegt nicht im Chart (keine Zugangsdaten
+# im Repo), sondern wird vorab angelegt: bash platform/registry/ghcr-pull-secret.sh
+imagePullSecrets:
+  - name: ghcr-pull
+
 # Pod-Netz des Clusters (kubeadm podSubnet): Proxys darin (Envoy des Gateways, später nginx)
 # gelten für die Dienste als vertrauenswürdig - nur dann werten sie X-Forwarded-* aus.
 trustedProxyNetworks:
@@ -17,12 +22,16 @@ trustedProxyNetworks:
 # meldet ihn dem Dienst per X-Forwarded-Prefix (für Links wie den Location-Header).
 services:
   catalogservice:
-    image: ghcr.io/sschabbach-mse/catalogservice
-    tag: "0.1.0-create-api.9"     # GitVersion-Version aus dem CI des Dienstes (eindeutig je Commit)
+    image: ghcr.io/s-c-s-sl/catalogservice
+    tag: "0.1.0-alpha.2"          # GitVersion-Version aus dem CI des Dienstes (Image aus Repo S-C-S-Sl/CatalogService)
     # Das Deployment legt dafür ein ReplicaSet mit dieser Anzahl Pods an.
-    # ACHTUNG, solange der Dienst Daten nur im Speicher hält (InMemoryProductInteractor):
-    # jeder Pod hat eigene Daten - ein Produkt, das ein Pod angelegt hat, kennen die anderen nicht.
+    # Alle Pods nutzen dieselbe MongoDB (siehe "mongodb"), die Daten sind also für alle gleich.
     replicas: 3
+    # Verbindung zur MongoDB: Secret im Namespace des Produkts, angelegt vom Chart platform/mongodb
+    # (clients). Wird als Umgebungsvariable MongoDb__ConnectionString gesetzt (Pflicht im Dienst).
+    mongodb:
+      secretName: mongodb-catalog-api
+      secretKey: connection-string
     port: 8080                    # Kestrel im ASP.NET-Image
     pathPrefix: /api/catalog
     # Health-Endpunkte des Dienstes (nur im Cluster erreichbar, nicht über das Gateway):

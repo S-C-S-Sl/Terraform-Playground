@@ -197,6 +197,7 @@ bash platform/mongodb/install.sh
     @{ Name = 'Argo CD und Produkt "shop"';
     Run  = { Invoke-Wsl @'
 bash platform/argocd/install.sh
+bash platform/registry/ghcr-pull-secret.sh
 kubectl apply -f platform/argocd/apps/shop.yaml
 echo "Warte auf die Application shop ..."
 for i in $(seq 1 30); do

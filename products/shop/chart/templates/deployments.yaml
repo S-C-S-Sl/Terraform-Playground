@@ -17,6 +17,10 @@ spec:
       labels:
         {{- include "shop.labels" $ctx | nindent 8 }}
     spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ $name }}
           image: "{{ $svc.image }}:{{ $svc.tag }}"
@@ -28,6 +32,14 @@ spec:
             {{- range $i, $net := $.Values.trustedProxyNetworks }}
             - name: {{ printf "ForwardedHeaders__KnownNetworks__%d" $i }}
               value: {{ $net | quote }}
+            {{- end }}
+            {{- with $svc.mongodb }}
+            # Connection String aus dem Secret, das platform/mongodb im Namespace des Produkts anlegt
+            - name: MongoDb__ConnectionString
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
             {{- end }}
           {{- $probes := $svc.probes | default dict }}
           readinessProbe:

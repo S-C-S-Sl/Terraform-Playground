@@ -10,7 +10,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/sschabbach-mse/Terraform-Playground.git
+    repoURL: https://github.com/S-C-S-Sl/Terraform-Playground.git
     targetRevision: develop
     path: products/shop/chart
     helm:
