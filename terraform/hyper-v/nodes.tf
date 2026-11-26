@@ -12,9 +12,14 @@ locals {
     nfs-1 = 50
   }
 
-  # Name einer VM: Prefix + Key. Gilt für Hyper-V-Name, Ordner, Hostname (= Knotenname im Cluster)
-  # und Ansible-Inventory. Der Key selbst bleibt der Schlüssel in local.nodes und local.data_disks.
+  # Name einer VM in Hyper-V: Prefix + Key (Schreibweise des Prefix bleibt erhalten). Gilt auch für den
+  # Ordner. Der Key selbst bleibt der Schlüssel in local.nodes und local.data_disks.
   vm_names = { for key, node in local.nodes : key => "${var.resource_prefix}${key}" }
+
+  # Name im Gast: Hostname, Knotenname im Cluster und Ansible-Inventory. Kleingeschrieben, denn
+  # Kubernetes-Knotennamen müssen klein sein (kubeadm join registriert sonst einen anderen Namen,
+  # als Ansible erwartet).
+  node_names = { for key, name in local.vm_names : key => lower(name) }
 
   lab_prefix_length = local.lab_net.prefix_length
   lab_gateway       = local.lab_net.gateway_ip
@@ -30,14 +35,14 @@ data "archive_file" "cidata" {
   source {
     filename = "meta-data"
     content = templatefile("${path.module}/templates/meta-data.yaml.tftpl", {
-      hostname = local.vm_names[each.key]
+      hostname = local.node_names[each.key]
     })
   }
 
   source {
     filename = "user-data"
     content = templatefile("${path.module}/templates/user-data.yaml.tftpl", {
-      hostname              = local.vm_names[each.key]
+      hostname              = local.node_names[each.key]
       ssh_ca_public_key     = trimspace(var.ssh_user_ca_public_key)
       console_password_hash = var.console_password_hash
     })

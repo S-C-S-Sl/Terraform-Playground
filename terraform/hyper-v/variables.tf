@@ -11,7 +11,7 @@ variable "hyperv_password" {
 # --- Namen --------------------------------------------------------------------
 variable "resource_prefix" {
   type        = string
-  description = "Optionales Prefix für die Hyper-V-Resourcen (VM-Namen, VM-Ordner, Switch, NAT) und die Namen der VMs im Gast: Hostname, Knotenname im Cluster und Ansible-Inventory."
+  description = "Optionales Prefix für die Hyper-V-Resourcen (VM-Namen, VM-Ordner, Switch, NAT) und die Namen der VMs im Gast: Hostname, Knotenname im Cluster und Ansible-Inventory (dort kleingeschrieben, Kubernetes verlangt das)."
   default     = ""
 
   validation {

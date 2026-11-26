@@ -7,15 +7,15 @@ locals {
         k8s = {
           children = {
             control_plane = {
-              hosts = { for name, n in local.nodes : local.vm_names[name] => { ansible_host = n.ip } if n.role == "control_plane" }
+              hosts = { for name, n in local.nodes : local.node_names[name] => { ansible_host = n.ip } if n.role == "control_plane" }
             }
             workers = {
-              hosts = { for name, n in local.nodes : local.vm_names[name] => { ansible_host = n.ip } if n.role == "worker" }
+              hosts = { for name, n in local.nodes : local.node_names[name] => { ansible_host = n.ip } if n.role == "worker" }
             }
           }
         }
         nfs = {
-          hosts = { for name, n in local.nodes : local.vm_names[name] => { ansible_host = n.ip } if n.role == "nfs" }
+          hosts = { for name, n in local.nodes : local.node_names[name] => { ansible_host = n.ip } if n.role == "nfs" }
         }
       }
     }

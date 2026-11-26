@@ -351,7 +351,7 @@ Hashes gehören deshalb nur in diese Datei.
 | `ssh_user_ca_public_key` | ja | Inhalt von `~/.ssh-ca/k8s_lab_user_ca.pub` (WSL: `cat ~/.ssh-ca/k8s_lab_user_ca.pub`) |
 | `base_image_path` | nein | Standard `D:\Hyper-V\images\ubuntu-2404-base.vhdx` |
 | `vm_root` | nein | Standard `D:\Hyper-V\VMs`, pro VM ein Unterordner |
-| `resource_prefix` | nein | Standard leer. Prefix für VM-Namen, VM-Ordner, Hostnamen, Switch und NAT (z. B. `dev-` ergibt VM, Hostname und Knoten `dev-cp-1`, `dev-worker-1`, Switch `dev-k8s-lab`). Auch das Ansible-Inventory führt die Namen mit Prefix; die Keys in `nodes.tf` bleiben `cp-1`, `worker-1` usw. Erlaubt sind Buchstaben, Ziffern und `-`; Hostname höchstens 63 Zeichen. Beim Aufbau-Skript per `-Prefix dev-`; zum Abbauen dasselbe Prefix angeben. Eine Änderung bei bestehenden VMs baut sie neu auf. |
+| `resource_prefix` | nein | Standard leer. Prefix für VM-Namen, VM-Ordner, Hostnamen, Switch und NAT (z. B. `dev-` ergibt VM, Hostname und Knoten `dev-cp-1`, `dev-worker-1`, Switch `dev-k8s-lab`). Hostname, Knotenname und Inventory sind immer kleingeschrieben (Prefix `MSED22C1-` ergibt Knoten `msed22c1-cp-1`, die VM in Hyper-V heißt weiter `MSED22C1-cp-1`). Auch das Ansible-Inventory führt die Namen mit Prefix; die Keys in `nodes.tf` bleiben `cp-1`, `worker-1` usw. Erlaubt sind Buchstaben, Ziffern und `-`; Hostname höchstens 63 Zeichen. Beim Aufbau-Skript per `-Prefix dev-`; zum Abbauen dasselbe Prefix angeben. Eine Änderung bei bestehenden VMs baut sie neu auf. |
 | `console_password_hash` | nein | Notfall-Login an der Hyper-V-Konsole, siehe unten |
 
 Die VMs selbst stehen in `terraform/hyper-v/nodes.tf` im Block `locals`:
