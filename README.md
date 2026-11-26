@@ -1099,7 +1099,7 @@ kubectl -n mongodb exec mongodb-0 -- bash -c \
 
 ```yaml
 env:
-  - name: ConnectionStrings__MongoDb
+  - name: MongoDb__ConnectionString   # so liest ihn der catalogservice (Pflicht)
     valueFrom:
       secretKeyRef:
         name: mongodb-catalog-api
@@ -1157,7 +1157,7 @@ Version per GitVersion, Registry ghcr.io). Hier liegt nur das **Helm-Chart des P
 | `templates/httproute.yaml` | eine Route für das Produkt, je Dienst eine Regel nach Pfad; der Präfix wird entfernt (`/api/catalog/x` → `/x`) und per `X-Forwarded-Prefix` gemeldet |
 | `platform/argocd/apps/shop.yaml` | Application: Quelle `products/shop/chart` im Branch `develop`, Ziel Namespace `shop`, automatischer Abgleich |
 
-Derzeitiger Dienst: `catalogservice` (Repo `sschabbach-mse/CatalogService`), erreichbar unter
+Derzeitiger Dienst: `catalogservice` (Repo `S-C-S-Sl/CatalogService`), erreichbar unter
 `http://shop.k8s-lab/api/catalog/`:
 
 | Von außen | Im Dienst |
@@ -1178,7 +1178,7 @@ Port offen ist.
 
 - Das Chart ist nach `develop` **gepusht** – Argo CD liest aus GitHub, nicht aus dem lokalen Arbeitsverzeichnis.
 - Das Paket auf ghcr.io ist öffentlich (GitHub → *Packages* → `catalogservice` → *Package settings* →
-  *Change visibility*). Prüfen auf einem Knoten: `sudo crictl pull ghcr.io/sschabbach-mse/catalogservice:0.1.0-create-api.1`.
+  *Change visibility*). Prüfen auf einem Knoten: `sudo crictl pull ghcr.io/s-c-s-sl/catalogservice:0.1.0-alpha.2`.
 - War `shop` vorher per Helm installiert: `helm -n shop uninstall shop` (keine Übernahme).
 
 ```bash

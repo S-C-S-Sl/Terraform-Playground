@@ -29,6 +29,14 @@ spec:
             - name: {{ printf "ForwardedHeaders__KnownNetworks__%d" $i }}
               value: {{ $net | quote }}
             {{- end }}
+            {{- with $svc.mongodb }}
+            # Connection String aus dem Secret, das platform/mongodb im Namespace des Produkts anlegt
+            - name: MongoDb__ConnectionString
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
           {{- $probes := $svc.probes | default dict }}
           readinessProbe:
             {{- include "shop.probe" (dict "path" $probes.readiness) | nindent 12 }}
